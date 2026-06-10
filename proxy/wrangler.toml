@@ -1,0 +1,6 @@
+name = "mmt-cors-proxy"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ALLOWED_HOSTS = "admin.classes.nagwa.com,qms-api.nagwa.com,12digit.nagwa.com"
