@@ -197,11 +197,25 @@ Edit `oauth-config.json` (commit this file — the client ID is public; never co
 
 If Nagwa API calls fail on GitHub Pages, deploy `proxy/worker.js` to Cloudflare and set `cors_proxy_url` to the worker URL.
 
-### 5.3 Enable GitHub Pages
+### 5.3 Enable GitHub Pages (required — do this before the workflow can succeed)
 
-1. Push to `main` — the included `.github/workflows/pages.yml` deploys automatically
-2. Or: **Settings → Pages → Source: GitHub Actions**
-3. Share the Pages URL with your team
+The deploy workflow **will fail** with `Get Pages site failed` / `Not Found` until Pages is turned on manually:
+
+1. Open **https://github.com/farouknagwa/mmt/settings/pages**
+2. Under **Build and deployment → Source**, choose **GitHub Actions** (not “Deploy from a branch”)
+3. The choice saves automatically — this creates the `github-pages` environment
+4. Go to **Actions** → **Deploy static content to Pages** → **Run workflow** (or push to `main` again)
+
+Also check **Settings → Actions → General → Workflow permissions**:
+
+- Select **Read and write permissions**
+- Save
+
+After a successful run, the site is at **https://farouknagwa.github.io/mmt/** (allow 2–5 minutes on first deploy).
+
+### 5.4 Share the URL
+
+Send **https://farouknagwa.github.io/mmt/** to your team — no clone or install needed.
 
 ---
 
@@ -311,6 +325,8 @@ links.csv.example       # Template for session URLs
 
 | Issue | What to try |
 |-------|-------------|
+| `Get Pages site failed` / `Not Found` in Actions | **Settings → Pages → Source → GitHub Actions**, then re-run workflow ([§5.3](#53-enable-github-pages-required--do-this-before-the-workflow-can-succeed)) |
+| Node.js 20 deprecation warning in Actions | Harmless until mid-2026; workflow uses `deploy-pages@v5` (Node 24) |
 | `Failed to fetch` on metasession API | Use `node proxy/dev-server.mjs`, clear CORS proxy URL, hard-refresh |
 | Google auth fails | Check files beside `index.html`; click **Verify Google auth** |
 | Output folder read-only | Use **Browse** for output, not drag-only |
