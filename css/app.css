@@ -319,6 +319,25 @@ code {
   color: var(--muted);
 }
 
+.auth-buttons {
+  margin-bottom: 0.75rem;
+}
+
+.auth-local-details {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.auth-local-details summary {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.auth-local-details[open] summary {
+  margin-bottom: 0.5rem;
+}
+
 button.secondary {
   background: transparent;
   border-color: var(--accent);

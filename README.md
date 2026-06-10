@@ -11,13 +11,14 @@ Standalone HTML/CSS/JS port of the Python `run_all.py` pipeline. Run all 10 meta
 1. [Clone the repository](#1-clone-the-repository)
 2. [First-time upload (publish this project to GitHub)](#2-first-time-upload-publish-this-project-to-github)
 3. [Local setup](#3-local-setup)
-4. [Run the app](#4-run-the-app)
-5. [Daily workflow](#5-daily-workflow)
-6. [GitHub Pages (optional)](#6-github-pages-optional)
-7. [What to commit vs ignore](#7-what-to-commit-vs-ignore)
-8. [Pipeline steps](#8-pipeline-steps)
-9. [Project structure](#9-project-structure)
-10. [Security](#10-security)
+4. [Using the published page (no clone)](#4-using-the-published-page-no-clone--for-end-users)
+5. [One-time setup for the site admin](#5-one-time-setup-for-the-site-admin-github-pages--google-sign-in)
+6. [Run the app locally](#6-run-the-app-locally-developers)
+7. [Daily workflow](#7-daily-workflow)
+8. [What to commit vs ignore](#8-what-to-commit-vs-ignore)
+9. [Pipeline steps](#9-pipeline-steps)
+10. [Project structure](#10-project-structure)
+11. [Security](#11-security)
 
 ---
 
@@ -154,7 +155,57 @@ At run time, pick or drag:
 
 ---
 
-## 4. Run the app
+## 4. Using the published page (no clone — for end users)
+
+If the site is deployed to GitHub Pages (e.g. `https://farouknagwa.github.io/mmt/`):
+
+1. Open the URL in **Chrome or Edge**
+2. Click **Sign in with Google** (grants Drive + Sheets access in your browser)
+3. Paste your **Google Slides URL** and click **Use this URL** (or drag `links.csv`)
+4. **Browse** or drag: **CLS archive**, **Slides archive**, and optionally **Output folder**
+5. Click **Run pipeline**
+6. Click **Download ZIP** (or **Write to folder** if you picked a writable output folder)
+
+Nothing is installed on the PC. Pipeline output stays in browser memory until you download it.
+
+---
+
+## 5. One-time setup for the site admin (GitHub Pages + Google sign-in)
+
+End users only need the published URL. **You** (repo owner) must configure Google OAuth once:
+
+### 5.1 Create a Web OAuth client
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
+2. **Create credentials** → **OAuth client ID** → type **Web application**
+3. **Authorized JavaScript origins** — add:
+   - `https://farouknagwa.github.io` (or your Pages domain)
+   - `http://127.0.0.1:8788` and `http://localhost:8788` (local dev)
+4. Copy the **Client ID** (ends with `.apps.googleusercontent.com`)
+5. Enable **Google Drive API** and **Google Sheets API** for the project
+
+### 5.2 Add client ID to the repo
+
+Edit `oauth-config.json` (commit this file — the client ID is public; never commit client secret):
+
+```json
+{
+  "client_id": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
+  "cors_proxy_url": ""
+}
+```
+
+If Nagwa API calls fail on GitHub Pages, deploy `proxy/worker.js` to Cloudflare and set `cors_proxy_url` to the worker URL.
+
+### 5.3 Enable GitHub Pages
+
+1. Push to `main` — the included `.github/workflows/pages.yml` deploys automatically
+2. Or: **Settings → Pages → Source: GitHub Actions**
+3. Share the Pages URL with your team
+
+---
+
+## 6. Run the app locally (developers)
 
 ### Recommended: dev server
 
@@ -186,7 +237,7 @@ Pipeline output lives in **browser memory** until you click **Write to folder** 
 
 ---
 
-## 5. Daily workflow
+## 7. Daily workflow
 
 Typical session processing:
 
@@ -200,41 +251,18 @@ To re-run only part of the pipeline, set **Resume from step** (same idea as `pyt
 
 ---
 
-## 6. GitHub Pages (optional)
-
-You can host the static UI on GitHub Pages. **OAuth token files cannot be hosted on Pages** — users still need `credentials.json` and tokens locally, or you use a different auth flow.
-
-1. Push this repo to GitHub
-2. **Settings → Pages → Build and deployment**
-   - Source: **Deploy from a branch**
-   - Branch: `main` / `/ (root)`
-3. After deploy, open `https://farouknagwa.github.io/mmt/` (URL depends on your GitHub username)
-
-If Nagwa API calls fail with CORS on Pages, deploy the optional Cloudflare worker proxy:
-
-```bash
-cd proxy
-npx wrangler deploy worker.js
-```
-
-Paste the worker URL into **CORS proxy URL** in the app.
-
-Allowed proxy hosts (default): `admin.classes.nagwa.com`, `qms-api.nagwa.com`, `12digit.nagwa.com`.
-
----
-
-## 7. What to commit vs ignore
+## 8. What to commit vs ignore
 
 | Commit | Do not commit |
 |--------|----------------|
 | `index.html`, `css/`, `js/`, `proxy/` | `credentials.json`, `token*.json` |
 | `README.md`, `.gitignore` | `links.csv` (session URLs) |
-| `links.csv.example` | `Output/`, `sessions/`, `csvs/`, `xml/`, `tex/`, `files/` |
+| `links.csv.example`, `oauth-config.json` (web client_id only) | `Output/`, `sessions/`, `csvs/`, `xml/`, `tex/`, `files/` |
 | `assets/` (fonts, icons) | `terminal log*.txt`, `*.aux`, `*.log` |
 
 ---
 
-## 8. Pipeline steps
+## 9. Pipeline steps
 
 | Step | Module | Description |
 |------|--------|-------------|
@@ -251,7 +279,7 @@ Allowed proxy hosts (default): `admin.classes.nagwa.com`, `qms-api.nagwa.com`, `
 
 ---
 
-## 9. Project structure
+## 10. Project structure
 
 ```
 index.html              # App shell
@@ -270,7 +298,7 @@ links.csv.example       # Template for session URLs
 
 ---
 
-## 10. Security
+## 11. Security
 
 - Keep the repository **private** if it contains or ever contained OAuth secrets
 - Never commit `credentials.json` or token JSON files

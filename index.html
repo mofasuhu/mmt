@@ -10,30 +10,43 @@
 <body>
   <header class="app-header">
     <h1>Metasession Markup Tool</h1>
-    <p class="subtitle">Drag <code>links.csv</code> and folders, or use bundled files — run all 10 pipeline steps in the browser.</p>
+    <p class="subtitle">Open this page in Chrome or Edge — sign in with Google, add your slides URL, pick folders, run the pipeline, then download results. No install required.</p>
   </header>
 
   <main class="layout">
     <section class="panel">
       <h2>Inputs</h2>
 
+      <label class="field">
+        <span>Google Slides URL</span>
+        <input type="url" id="slides-url" placeholder="https://docs.google.com/presentation/d/…/edit" />
+        <button type="button" id="use-slides-url" class="secondary">Use this URL</button>
+        <small id="links-csv-name">Or drag &amp; drop <code>links.csv</code> onto the zone below</small>
+      </label>
+
       <div class="drop-zone" id="drop-links-csv" tabindex="0">
         <strong>links.csv</strong>
         <p>Drag &amp; drop <code>links.csv</code> here</p>
-        <small id="links-csv-name">Auto-loads <code>links.csv</code> from project folder if present</small>
       </div>
 
       <div class="auth-block">
-        <h3>Google auth (static files)</h3>
-        <p class="auth-hint">Place these next to <code>index.html</code> — no upload needed:</p>
-        <ul class="auth-files">
-          <li><code>credentials.json</code></li>
-          <li><code>token.json</code> — Drive</li>
-          <li><code>token_read.json</code> — Drive fallback</li>
-          <li><code>token_sheet.json</code> — Sheets</li>
-        </ul>
+        <h3>Google account</h3>
+        <p class="auth-hint">Sign in to access Google Drive (download slides) and Sheets (step 6).</p>
         <small id="auth-status">Checking…</small>
-        <button type="button" id="verify-auth" class="secondary">Verify Google auth</button>
+        <div class="btn-row auth-buttons">
+          <button type="button" id="sign-in-google" class="primary">Sign in with Google</button>
+          <button type="button" id="verify-auth" class="secondary">Verify access</button>
+        </div>
+        <details class="auth-local-details">
+          <summary>Local dev: static token files</summary>
+          <p class="auth-hint">Optional — place next to <code>index.html</code> when running locally:</p>
+          <ul class="auth-files">
+            <li><code>credentials.json</code></li>
+            <li><code>token.json</code> — Drive</li>
+            <li><code>token_read.json</code> — Drive fallback</li>
+            <li><code>token_sheet.json</code> — Sheets</li>
+          </ul>
+        </details>
       </div>
 
       <label class="field">
@@ -100,9 +113,9 @@
   </main>
 
   <footer class="app-footer">
-    <p>Chrome or Edge recommended. Dropped folders may be read-only — use Browse for a writable output folder.</p>
+    <p>Chrome or Edge recommended. On the published site: sign in with Google, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
   </footer>
 
-  <script type="module" src="js/main.js?v=5"></script>
+  <script type="module" src="js/main.js?v=6"></script>
 </body>
 </html>

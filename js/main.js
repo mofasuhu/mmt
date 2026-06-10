@@ -138,15 +138,27 @@ function setStepStatus(step, status) {
 function updateAuthStatusUi() {
   const st = googleAuth.getAuthStatus();
   const el = $('#auth-status');
+  const signInBtn = $('#sign-in-google');
   if (!el) return;
-  const parts = [];
-  if (st.credentials) parts.push('credentials.json');
-  if (st.drive) parts.push('token.json');
-  if (st.driveRead) parts.push('token_read.json');
-  if (st.sheets) parts.push('token_sheet.json');
-  el.textContent = parts.length
-    ? `Loaded: ${parts.join(', ')}`
-    : 'Place credentials.json and token files next to index.html';
+
+  if (st.interactive) {
+    el.textContent = 'Signed in with Google (browser).';
+    if (signInBtn) signInBtn.textContent = 'Sign in again';
+  } else if (st.staticReady) {
+    const parts = [];
+    if (st.drive) parts.push('token.json');
+    if (st.driveRead) parts.push('token_read.json');
+    if (st.sheets) parts.push('token_sheet.json');
+    el.textContent = `Local tokens: ${parts.join(', ')}`;
+  } else if (st.browserSignIn) {
+    el.textContent = 'Click “Sign in with Google” to continue.';
+  } else {
+    el.textContent = 'Auth not configured — site admin must set client_id in oauth-config.json.';
+  }
+
+  if (signInBtn) {
+    signInBtn.disabled = !st.browserSignIn;
+  }
 }
 
 async function loadBundledAssets() {
@@ -183,8 +195,24 @@ async function loadStaticLinksCsv() {
 async function handleLinksCsv(file) {
   const text = await file.text();
   await vfs.writeText('links.csv', text);
-  $('#links-csv-name').textContent = file.name;
+  $('#links-csv-name').textContent = `Loaded: ${file.name}`;
   log(`Loaded links.csv (${file.name})`);
+}
+
+async function useSlidesUrl() {
+  const url = ($('#slides-url').value || '').trim();
+  if (!url) {
+    log('Paste a Google Slides URL first.');
+    return;
+  }
+  if (!url.includes('docs.google.com/presentation')) {
+    log('URL should be a Google Slides presentation link.');
+    return;
+  }
+  const csv = `url,name\n${url},\n`;
+  await vfs.writeText('links.csv', csv);
+  $('#links-csv-name').textContent = 'Loaded from pasted URL';
+  log('Created links.csv from pasted Google Slides URL.');
 }
 
 function mountArchives() {
@@ -310,6 +338,18 @@ async function downloadZip() {
   log('ZIP download started.');
 }
 
+async function signInGoogle() {
+  try {
+    await googleAuth.signInInteractive(log, { prompt: 'consent' });
+    updateAuthStatusUi();
+    return true;
+  } catch (e) {
+    log(`Google sign-in failed: ${e.message}`);
+    updateAuthStatusUi();
+    return false;
+  }
+}
+
 async function verifyGoogleAuth() {
   try {
     await googleAuth.connectDrive(log);
@@ -398,7 +438,12 @@ function initUi() {
     localStorage.setItem('mmt_proxy_url', e.target.value.trim());
   });
 
+  $('#sign-in-google').addEventListener('click', () => signInGoogle());
   $('#verify-auth').addEventListener('click', () => verifyGoogleAuth());
+  $('#use-slides-url').addEventListener('click', () => useSlidesUrl().catch((e) => log(e.message)));
+  $('#slides-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') useSlidesUrl().catch((err) => log(err.message));
+  });
 
   $('#pick-output').addEventListener('click', () => pickOutputFolder().catch((e) => log(e.message)));
   $('#pick-cls').addEventListener('click', () => pickClsArchive().catch((e) => log(e.message)));
@@ -420,6 +465,11 @@ function initUi() {
   });
 }
 
+function isGitHubPagesHost() {
+  return typeof window !== 'undefined'
+    && window.location.hostname.endsWith('github.io');
+}
+
 async function probeApisOnLoad() {
   const proxy = getProxyUrl();
   const onDevServer = typeof window !== 'undefined' && window.location?.pathname !== undefined
@@ -428,6 +478,9 @@ async function probeApisOnLoad() {
 
   if (onDevServer) {
     log('Dev server detected — Nagwa APIs fall back to /proxy if direct fetch fails.');
+  } else if (isGitHubPagesHost()) {
+    log('Published mode — sign in with Google, paste a Slides URL, pick folders, then run pipeline.');
+    if (proxy) log(`CORS proxy: ${proxy}`);
   } else if (proxy) {
     log(`CORS proxy configured: ${proxy} (Nagwa APIs try direct fetch first)`);
   }
@@ -437,7 +490,11 @@ async function probeApisOnLoad() {
     log(ok ? 'Metasession API reachable from this browser.' : 'Metasession API returned non-OK status.');
   } catch (e) {
     log(`Metasession API probe failed: ${e.message}`);
-    log('Run: node proxy/dev-server.mjs  then open http://127.0.0.1:8788');
+    if (onDevServer) {
+      log('Run: node proxy/dev-server.mjs  then open http://127.0.0.1:8788');
+    } else if (!proxy) {
+      log('Set CORS proxy URL (or add cors_proxy_url in oauth-config.json) if API calls fail on GitHub Pages.');
+    }
     if (proxy) log('Or clear the CORS proxy URL field and hard-refresh (Cmd+Shift+R).');
   }
 }
@@ -445,6 +502,11 @@ async function probeApisOnLoad() {
 async function bootstrap() {
   initUi();
   await loadBundledAssets();
+  await googleAuth.loadOAuthConfig(log);
+  if (googleAuth.corsProxyUrl && !getProxyUrl()) {
+    $('#proxy-url').value = googleAuth.corsProxyUrl;
+    localStorage.setItem('mmt_proxy_url', googleAuth.corsProxyUrl);
+  }
   await loadStaticLinksCsv();
   await googleAuth.loadStaticAuthFiles(log);
   updateAuthStatusUi();

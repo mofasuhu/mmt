@@ -1,10 +1,10 @@
 /**
- * Google OAuth — loads credentials/tokens from static project files,
- * with refresh via refresh_token (same format as Python google-auth token JSON).
+ * Google OAuth — browser sign-in (GitHub Pages) or static token files (local dev).
  */
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const DEFAULT_SCOPES = [DRIVE_SCOPE, SHEETS_SCOPE];
 
 export const STATIC_AUTH_FILES = {
   credentials: 'credentials.json',
@@ -13,12 +13,17 @@ export const STATIC_AUTH_FILES = {
   sheetsToken: 'token_sheet.json',
 };
 
+export const OAUTH_CONFIG_FILE = 'oauth-config.json';
+
 /** @type {Record<string, object | null>} */
 const staticTokenBundles = {
   drive: null,
   driveRead: null,
   sheets: null,
 };
+
+/** @type {Promise<void> | null} */
+let gisScriptPromise = null;
 
 function parseExpiryMs(expiry) {
   if (!expiry) return 0;
@@ -45,6 +50,23 @@ async function fetchJsonOptional(path) {
   } catch {
     return null;
   }
+}
+
+function loadGisScript() {
+  if (typeof window !== 'undefined' && window.google?.accounts?.oauth2) {
+    return Promise.resolve();
+  }
+  if (!gisScriptPromise) {
+    gisScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+      document.head.appendChild(script);
+    });
+  }
+  return gisScriptPromise;
 }
 
 async function refreshTokenBundle(bundle, log = console.log) {
@@ -96,6 +118,51 @@ export class GoogleAuth {
     this.clientSecret = '';
     this.credentialsLoaded = false;
     this.staticAuthReady = false;
+    this.oauthClientId = '';
+    this.oauthScopes = [...DEFAULT_SCOPES];
+    this.corsProxyUrl = '';
+    /** @type {string | null} */
+    this.interactiveToken = null;
+    this.interactiveExpiryMs = 0;
+  }
+
+  getInteractiveTokenIfValid(skewMs = 60_000) {
+    if (!this.interactiveToken) return null;
+    if (this.interactiveExpiryMs && Date.now() >= this.interactiveExpiryMs - skewMs) {
+      return null;
+    }
+    return this.interactiveToken;
+  }
+
+  /**
+   * Load oauth-config.json (web client_id for browser sign-in on GitHub Pages).
+   * @param {(msg: string) => void} [log]
+   */
+  async loadOAuthConfig(log = console.log) {
+    const config = await fetchJsonOptional(OAUTH_CONFIG_FILE);
+    if (!config) {
+      log(`ℹ️  ${OAUTH_CONFIG_FILE} not found — browser sign-in disabled (use local token files or add config for GitHub Pages).`);
+      return false;
+    }
+
+    const clientId = String(config.client_id || '').trim();
+    if (clientId) {
+      this.oauthClientId = clientId;
+      this.clientId = clientId;
+      log(`Loaded OAuth web client from ${OAUTH_CONFIG_FILE}`);
+    }
+
+    if (Array.isArray(config.scopes) && config.scopes.length) {
+      this.oauthScopes = config.scopes.map(String);
+    }
+
+    const proxy = String(config.cors_proxy_url || '').trim();
+    if (proxy) {
+      this.corsProxyUrl = proxy;
+      log(`Default CORS proxy from ${OAUTH_CONFIG_FILE}: ${proxy}`);
+    }
+
+    return Boolean(this.oauthClientId);
   }
 
   /**
@@ -106,14 +173,12 @@ export class GoogleAuth {
     const credentials = await fetchJsonOptional(STATIC_AUTH_FILES.credentials);
     if (credentials) {
       const installed = credentials.installed || credentials.web || credentials;
-      this.clientId = installed.client_id || '';
+      this.clientId = installed.client_id || this.clientId;
       this.clientSecret = installed.client_secret || '';
       this.credentialsLoaded = Boolean(this.clientId);
-      if (this.clientId) {
+      if (installed.client_id) {
         log(`Loaded OAuth client from ${STATIC_AUTH_FILES.credentials}`);
       }
-    } else {
-      log(`⚠️  ${STATIC_AUTH_FILES.credentials} not found — place it next to index.html`);
     }
 
     staticTokenBundles.drive = await fetchJsonOptional(STATIC_AUTH_FILES.driveToken);
@@ -130,29 +195,80 @@ export class GoogleAuth {
       log(`Loaded Sheets token from ${STATIC_AUTH_FILES.sheetsToken}`);
     }
 
-    // Prefer client_id from token files if credentials.json absent
     if (!this.clientId) {
       const src = staticTokenBundles.drive || staticTokenBundles.sheets;
       if (src?.client_id) this.clientId = src.client_id;
     }
 
     this.staticAuthReady = Boolean(
-      this.clientId && (staticTokenBundles.drive || staticTokenBundles.driveRead || staticTokenBundles.sheets),
+      staticTokenBundles.drive || staticTokenBundles.driveRead || staticTokenBundles.sheets,
     );
     return this.staticAuthReady;
   }
 
+  get browserSignInAvailable() {
+    return Boolean(this.oauthClientId);
+  }
+
+  get isAuthenticated() {
+    if (this.getInteractiveTokenIfValid()) return true;
+    if (this.staticAuthReady) return true;
+    return false;
+  }
+
   getAuthStatus() {
+    const interactive = Boolean(this.getInteractiveTokenIfValid());
     return {
+      interactive,
+      browserSignIn: this.browserSignInAvailable,
       credentials: this.credentialsLoaded,
       drive: Boolean(staticTokenBundles.drive),
       driveRead: Boolean(staticTokenBundles.driveRead),
       sheets: Boolean(staticTokenBundles.sheets),
+      staticReady: this.staticAuthReady,
       clientId: this.clientId ? `${this.clientId.slice(0, 20)}…` : '',
     };
   }
 
-  async getDriveAccessToken(log = console.log) {
+  /**
+   * Browser sign-in via Google Identity Services (for GitHub Pages users).
+   * @param {(msg: string) => void} [log]
+   * @param {{ prompt?: string }} [opts]
+   */
+  async signInInteractive(log = console.log, { prompt = '' } = {}) {
+    if (!this.oauthClientId) {
+      throw new Error(
+        `Browser sign-in is not configured. Add client_id to ${OAUTH_CONFIG_FILE} (see ${OAUTH_CONFIG_FILE.replace('.json', '.json.example')}).`,
+      );
+    }
+
+    await loadGisScript();
+    const scope = this.oauthScopes.join(' ');
+
+    return new Promise((resolve, reject) => {
+      try {
+        const client = window.google.accounts.oauth2.initTokenClient({
+          client_id: this.oauthClientId,
+          scope,
+          callback: (response) => {
+            if (response.error) {
+              reject(new Error(response.error_description || response.error));
+              return;
+            }
+            this.interactiveToken = response.access_token;
+            this.interactiveExpiryMs = Date.now() + (response.expires_in || 3600) * 1000;
+            log('Signed in with Google (browser).');
+            resolve(this.interactiveToken);
+          },
+        });
+        client.requestAccessToken({ prompt });
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  async getStaticDriveAccessToken(log = console.log) {
     const primary = staticTokenBundles.drive;
     const fallback = staticTokenBundles.driveRead;
 
@@ -168,28 +284,74 @@ export class GoogleAuth {
       return resolveAccessToken(fallback, log);
     }
 
+    return null;
+  }
+
+  async getStaticSheetsAccessToken(log = console.log) {
+    const bundle = staticTokenBundles.sheets;
+    if (!bundle) return null;
+    return resolveAccessToken(bundle, log);
+  }
+
+  async getDriveAccessToken(log = console.log) {
+    const interactive = this.getInteractiveTokenIfValid();
+    if (interactive) return interactive;
+
+    const staticToken = await this.getStaticDriveAccessToken(log);
+    if (staticToken) return staticToken;
+
     throw new Error(
-      `No valid Drive token. Add ${STATIC_AUTH_FILES.driveToken} or ${STATIC_AUTH_FILES.driveTokenRead} next to index.html.`,
+      'No valid Drive access. Sign in with Google, or add token.json next to index.html for local dev.',
     );
   }
 
   async getSheetsAccessToken(log = console.log) {
-    const bundle = staticTokenBundles.sheets;
-    if (!bundle) {
-      throw new Error(`No Sheets token. Add ${STATIC_AUTH_FILES.sheetsToken} next to index.html.`);
+    const interactive = this.getInteractiveTokenIfValid();
+    if (interactive) return interactive;
+
+    const staticToken = await this.getStaticSheetsAccessToken(log);
+    if (staticToken) return staticToken;
+
+    throw new Error(
+      'No valid Sheets access. Sign in with Google, or add token_sheet.json next to index.html for local dev.',
+    );
+  }
+
+  /**
+   * Ensure the user is authenticated — interactive sign-in or static tokens.
+   * @param {(msg: string) => void} [log]
+   */
+  async ensureAuthenticated(log = console.log) {
+    if (this.getInteractiveTokenIfValid()) return;
+
+    const staticDrive = await this.getStaticDriveAccessToken(log).catch(() => null);
+    const staticSheets = await this.getStaticSheetsAccessToken(log).catch(() => null);
+    if (staticDrive && staticSheets) return;
+
+    if (this.browserSignInAvailable) {
+      const prompt = this.interactiveToken ? '' : 'consent';
+      await this.signInInteractive(log, { prompt });
+      return;
     }
-    return resolveAccessToken(bundle, log);
+
+    throw new Error(
+      'Google auth not configured. For published site: set client_id in oauth-config.json. For local dev: add token.json and token_sheet.json.',
+    );
   }
 
   async connectDrive(log = console.log) {
+    await this.ensureAuthenticated(log);
     const token = await this.getDriveAccessToken(log);
-    log('Google Drive ready (static token).');
+    if (!token) throw new Error('Drive authentication failed.');
+    log(this.getInteractiveTokenIfValid() ? 'Google Drive ready (browser sign-in).' : 'Google Drive ready (static token).');
     return token;
   }
 
   async connectSheets(log = console.log) {
+    await this.ensureAuthenticated(log);
     const token = await this.getSheetsAccessToken(log);
-    log('Google Sheets ready (static token).');
+    if (!token) throw new Error('Sheets authentication failed.');
+    log(this.getInteractiveTokenIfValid() ? 'Google Sheets ready (browser sign-in).' : 'Google Sheets ready (static token).');
     return token;
   }
 
