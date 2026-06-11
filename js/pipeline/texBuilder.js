@@ -29,7 +29,7 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
 
   const root = doc.documentElement;
   const metasessionId = xmlFilenameStem.split('_')[0];
-  const csvPath = await findCsvForMetasession(vfs, metasessionId, 'csvs');
+  const csvPath = await findCsvForMetasession(metasessionId, vfs, 'csvs');
 
   let csvRows = [];
   let rowById = {};
