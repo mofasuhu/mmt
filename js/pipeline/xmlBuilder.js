@@ -6,6 +6,7 @@ import {
   normalizeSectionId,
   normalizeSectionType,
   tocTitleForLanguage,
+  localizeCanonicalSlideTitle,
   isTwelveDigitId,
   rowRequiresEmptySlideId,
   xmlQuestionPlacement,
@@ -767,6 +768,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     } else {
       slideTitleText = slideType === 'example' ? 'Example' : lastSectionTitle;
     }
+
+    slideTitleText = localizeCanonicalSlideTitle(slideTitleText, lang);
 
     const slideAttrs = {
       slide_id: slideId,

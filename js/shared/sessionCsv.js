@@ -21,6 +21,12 @@ const LANGUAGE_ALIASES = {
   german: 'de',
 };
 
+/** Canonical Example/Question titles → session language (matches session_csv.py). */
+const CANONICAL_SLIDE_TITLES = {
+  question: { ar: 'سؤال', en: 'Question' },
+  example: { ar: 'مثال', en: 'Example' },
+};
+
 export function normalizeLanguageCode(lang) {
   const code = csvCellStr(lang).toLowerCase();
   if (!code) return 'en';
@@ -30,6 +36,16 @@ export function normalizeLanguageCode(lang) {
 export function tocTitleForLanguage(lang) {
   const code = normalizeLanguageCode(lang);
   return TOC_TITLE_BY_LANGUAGE[code] || TOC_TITLE_BY_LANGUAGE.en;
+}
+
+/** Map canonical Example/Question slide titles to the session language. */
+export function localizeCanonicalSlideTitle(title, lang) {
+  const text = csvCellStr(title);
+  if (!text) return text;
+  const code = normalizeLanguageCode(lang);
+  const mapping = CANONICAL_SLIDE_TITLES[text.toLowerCase()];
+  if (mapping) return mapping[code] || text;
+  return text;
 }
 
 export function isNewId(val) {
