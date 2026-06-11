@@ -15,7 +15,7 @@ import { downloadVfsAsZip } from './io/zipExport.js';
 import { runPipeline, PIPELINE_STEP_LABELS, LAST_PIPELINE_STEP } from './pipeline/runAll.js';
 import { createGoogleAuth, GoogleSheets } from './auth/googleAuth.js';
 import { setMetasessionFetchFn } from './shared/metasessionApi.js';
-import { createAppFetch, probeMetasessionApi } from './shared/httpFetch.js';
+import { createAppFetch, isGitHubPagesHost, probeMetasessionApi } from './shared/httpFetch.js';
 
 const $ = (sel) => document.querySelector(sel);
 const logEl = $('#log-panel');
@@ -465,11 +465,6 @@ function initUi() {
   });
 }
 
-function isGitHubPagesHost() {
-  return typeof window !== 'undefined'
-    && window.location.hostname.endsWith('github.io');
-}
-
 async function probeApisOnLoad() {
   const proxy = getProxyUrl();
   const onDevServer = typeof window !== 'undefined' && window.location?.pathname !== undefined
@@ -480,22 +475,36 @@ async function probeApisOnLoad() {
     log('Dev server detected — Nagwa APIs fall back to /proxy if direct fetch fails.');
   } else if (isGitHubPagesHost()) {
     log('Published mode — sign in with Google, paste a Slides URL, pick folders, then run pipeline.');
-    if (proxy) log(`CORS proxy: ${proxy}`);
+    if (proxy) {
+      log(`CORS proxy: ${proxy}`);
+    } else {
+      log('⚠️  No CORS proxy configured — Nagwa API calls will fail on GitHub Pages until you deploy proxy/worker.js and set cors_proxy_url in oauth-config.json.');
+    }
   } else if (proxy) {
-    log(`CORS proxy configured: ${proxy} (Nagwa APIs try direct fetch first)`);
+    log(`CORS proxy configured: ${proxy}`);
   }
 
   try {
-    const ok = await probeMetasessionApi(appFetch, 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc');
-    log(ok ? 'Metasession API reachable from this browser.' : 'Metasession API returned non-OK status.');
+    const result = await probeMetasessionApi(appFetch, 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc');
+    if (result.ok) {
+      log(`Metasession API reachable (${result.via}).`);
+    } else {
+      log(`Metasession API returned HTTP ${result.status} (${result.via}).`);
+      if (isGitHubPagesHost() && !proxy) {
+        log('Deploy the CORS proxy: cd proxy && npx wrangler deploy');
+        log('Then set cors_proxy_url in oauth-config.json, push, and hard-refresh this page.');
+      } else if (onDevServer) {
+        log('Run: node proxy/dev-server.mjs  then open http://127.0.0.1:8788');
+      }
+    }
   } catch (e) {
     log(`Metasession API probe failed: ${e.message}`);
     if (onDevServer) {
       log('Run: node proxy/dev-server.mjs  then open http://127.0.0.1:8788');
-    } else if (!proxy) {
-      log('Set CORS proxy URL (or add cors_proxy_url in oauth-config.json) if API calls fail on GitHub Pages.');
+    } else if (isGitHubPagesHost() && !proxy) {
+      log('Deploy proxy/worker.js to Cloudflare and set cors_proxy_url in oauth-config.json.');
     }
-    if (proxy) log('Or clear the CORS proxy URL field and hard-refresh (Cmd+Shift+R).');
+    if (proxy) log('Check the CORS proxy URL is correct, or clear it and hard-refresh (Cmd+Shift+R).');
   }
 }
 

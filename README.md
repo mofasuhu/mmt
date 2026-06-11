@@ -195,7 +195,21 @@ Edit `oauth-config.json` (commit this file — the client ID is public; never co
 }
 ```
 
-If Nagwa API calls fail on GitHub Pages, deploy `proxy/worker.js` to Cloudflare and set `cors_proxy_url` to the worker URL.
+**CORS proxy is required on GitHub Pages** (browser cannot call Nagwa APIs directly). Deploy once:
+
+```bash
+cd proxy
+npx wrangler login
+npx wrangler deploy
+```
+
+Copy the worker URL (e.g. `https://mmt-cors-proxy.your-name.workers.dev`) into `oauth-config.json`:
+
+```json
+"cors_proxy_url": "https://mmt-cors-proxy.your-name.workers.dev"
+```
+
+Commit, push, wait for Pages to redeploy, then hard-refresh the app.
 
 ### 5.3 Enable GitHub Pages (required — do this before the workflow can succeed)
 

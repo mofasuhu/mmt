@@ -1,4 +1,4 @@
 {
   "client_id": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
-  "cors_proxy_url": ""
+  "cors_proxy_url": "https://mmt-cors-proxy.YOUR_SUBDOMAIN.workers.dev"
 }
