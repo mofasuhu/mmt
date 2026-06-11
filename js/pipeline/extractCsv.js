@@ -18,6 +18,9 @@ import {
 import {
   tocTitleForLanguage,
   isTwelveDigitId,
+  isSectionId,
+  isRecapTitle,
+  sectionIdValidationError,
   csvCellStr,
   rowHasPrimaryId,
   rowRequiresEmptySlideId,
@@ -287,6 +290,11 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         && !hasSlideId && !hasVideoId && !hasActivityId;
 
       if (isPlaceholder) {
+        const sidErr = sectionIdValidationError(
+          `Slide ${slideNumber}`,
+          slideData.section_id,
+        );
+        if (sidErr) slideValidationErrors.push(sidErr);
         rawSlides.push(slideData);
         log(
           `   [Slide ${slideNumber}] Placeholder slide - Section: '${slideData.section_title || ''}', `
@@ -330,6 +338,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let procSectionType = '';
     let sectionTypeUsed = false;
     let procPreviousCheckpoint = false;
+    let postQuestionSectionActive = false;
 
     let lastQuestionRawIndex = -1;
     for (let idx = 0; idx < rawSlides.length; idx += 1) {
@@ -351,9 +360,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         && !hasSlideId && !hasVideoId && !hasActivityId;
 
       if (isPlaceholder) {
+        if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
         procSectionTitle = slideData.section_title || '';
         const sid = (slideData.section_id || '').trim();
-        if (sid) procSectionId = sid;
+        if (isSectionId(sid)) procSectionId = sid;
         if (slideData.section_type) {
           procSectionType = slideData.section_type;
           sectionTypeUsed = false;
@@ -363,7 +373,12 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       const isThankYou = isThankYouSlide(slideData.slide_title || '');
-      const isRootTail = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
+      const isRecap = isRecapTitle(
+        slideData.slide_title || slideData.section_title_colored || '',
+      );
+      const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
+      let isRootTail = afterLastQuestion && !postQuestionSectionActive;
+      if (isThankYou || isRecap) isRootTail = true;
       if (isRootTail) {
         procSectionTitle = '';
         procSectionId = '';
@@ -456,7 +471,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       const sid = (slideData.section_id || '').trim();
-      if (sid) procSectionId = sid;
+      if (isSectionId(sid)) procSectionId = sid;
     }
 
     const deckLang = languageFromPresentationFilename(filePath);
@@ -739,8 +754,6 @@ function validateCsvFromRows(rows) {
 function validateCsvNewModeFromRows(rows) {
   const validationErrors = [];
   const idLocations = {};
-  const sectionIdPattern = /^\d{12}$/;
-
   for (const row of rows) {
     const slideNum = row.slide_number;
     const qid = csvCellStr(row.question_id);
@@ -750,9 +763,10 @@ function validateCsvNewModeFromRows(rows) {
     const questionRole = csvCellStr(row.question_role);
     const sectionId = csvCellStr(row.section_id);
 
-    if (sectionId && !sectionIdPattern.test(sectionId)) {
+    if (sectionId && !isSectionId(sectionId)) {
       validationErrors.push(
-        `Invalid format for section_id '${sectionId}' on slide ${slideNum}. Must be a 12-digit ID.`,
+        `Invalid format for section_id '${sectionId}' on slide ${slideNum}. `
+        + "Must be a 12-digit ID (not 'new').",
       );
     }
 

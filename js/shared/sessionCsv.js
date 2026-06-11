@@ -2,6 +2,9 @@
 
 const EMPTY_VALUES = new Set(['', 'nan', 'none', 'nat']);
 const TWELVE_DIGIT_ID_RE = /^\d{12}(\.\d+)?$/;
+const SECTION_ID_RE = /^\d{12}$/;
+const TASHKEEL_RE = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/;
+const RECAP_TITLES = new Set(['recap', 'ملخص']);
 
 export const TOC_TITLE_BY_LANGUAGE = {
   ar: 'محتوى الحصة',
@@ -56,6 +59,38 @@ export function isTwelveDigitId(val) {
   const s = csvCellStr(val);
   if (!s || isNewId(s)) return false;
   return TWELVE_DIGIT_ID_RE.test(s);
+}
+
+/** Strict 12-digit section id (not ``new``, no ``.N`` suffix). */
+export function isSectionId(val) {
+  const s = csvCellStr(val);
+  if (!s || isNewId(s)) return false;
+  return SECTION_ID_RE.test(s);
+}
+
+export function stripTashkeel(text) {
+  return csvCellStr(text).replace(TASHKEEL_RE, '');
+}
+
+export function isRecapTitle(title) {
+  return RECAP_TITLES.has(stripTashkeel(title).toLowerCase());
+}
+
+export function sectionIdValidationError(slideLabel, sectionId, { fieldName = 'section_id' } = {}) {
+  const sid = csvCellStr(sectionId);
+  if (!sid) {
+    return (
+      `${slideLabel}: section placeholder slide is missing ${fieldName}. `
+      + "Must be a 12-digit ID (not 'new')."
+    );
+  }
+  if (isNewId(sid)) {
+    return `${slideLabel}: ${fieldName} must be a 12-digit ID, not '${sid}'.`;
+  }
+  if (!SECTION_ID_RE.test(sid)) {
+    return `${slideLabel}: invalid ${fieldName} '${sid}'. Must be exactly 12 digits.`;
+  }
+  return null;
 }
 
 export function isSlideOrMediaId(val) {
@@ -119,6 +154,11 @@ export function normalizeSectionType(raw, defaultVal = 'regular') {
   const s = csvCellStr(raw) || csvCellStr(defaultVal) || 'regular';
   if (s.toLowerCase() === 'full curriculum') return 'regular';
   return s;
+}
+
+/** ``revision`` sections skip exact question-id cross-check against the section API. */
+export function skipSectionQuestionValidation(sectionType) {
+  return normalizeSectionType(sectionType).toLowerCase() === 'revision';
 }
 
 const UTF8_BOM = '\uFEFF';

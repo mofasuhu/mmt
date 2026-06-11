@@ -14,6 +14,9 @@ import {
 import {
   tocTitleForLanguage,
   isTwelveDigitId,
+  isSectionId,
+  isRecapTitle,
+  sectionIdValidationError,
   csvCellStr,
   rowHasPrimaryId,
   rowRequiresEmptySlideId,
@@ -514,7 +517,7 @@ async function processPresentationLegacy(vfs, filePath, log, options) {
       const isArTitleEmpty = !(currentSlide.ar_slide_title || '').trim();
       const isEnTitleEmpty = !(currentSlide.en_slide_title || '').trim();
       const isPlacementEmpty = !(currentSlide.question_placement || '').trim();
-      if (isArTitleEmpty && isPlacementEmpty) currentSlide.ar_slide_title = 'Question';
+      if (isArTitleEmpty && isPlacementEmpty) currentSlide.ar_slide_title = 'سؤال';
       if (isEnTitleEmpty && isPlacementEmpty) currentSlide.en_slide_title = 'Question';
     }
 
@@ -618,6 +621,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     const slideValidationErrors = validationErrorsBySlide
       .filter(([sn]) => sn <= maxSlideInclusive)
       .map(([, msg]) => msg);
+    const sectionIdValidationErrors = [];
 
     let currentArSection = '';
     let currentEnSection = '';
@@ -626,6 +630,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let currentSectionType = '';
     let sectionTypeUsed = false;
     let previousWasCheckpoint = false;
+    let postQuestionSectionActive = false;
 
     let defaultRequiredCorrect = '3';
     let defaultAttemptWindow = '5';
@@ -650,20 +655,42 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const isPlaceholder = hasArSectionTitle || hasEnSectionTitle;
 
       if (isPlaceholder) {
+        const slideNumber = slide.slide_number || slideIdx + 1;
+        if (hasArSectionTitle) {
+          const err = sectionIdValidationError(
+            `Slide ${slideNumber}`,
+            slide.ar_section_id,
+            { fieldName: 'ar_section_id' },
+          );
+          if (err) sectionIdValidationErrors.push(err);
+        }
+        if (hasEnSectionTitle) {
+          const err = sectionIdValidationError(
+            `Slide ${slideNumber}`,
+            slide.en_section_id,
+            { fieldName: 'en_section_id' },
+          );
+          if (err) sectionIdValidationErrors.push(err);
+        }
         if (hasArSectionTitle) currentArSection = slide.ar_section_title;
         if (hasEnSectionTitle) currentEnSection = slide.en_section_title;
         const arSid = (slide.ar_section_id || '').trim();
         const enSid = (slide.en_section_id || '').trim();
-        if (arSid) currentArSectionId = arSid;
-        if (enSid) currentEnSectionId = enSid;
+        if (isSectionId(arSid)) currentArSectionId = arSid;
+        if (isSectionId(enSid)) currentEnSectionId = enSid;
         if (slide.section_type) {
           currentSectionType = slide.section_type;
           sectionTypeUsed = false;
         }
+        if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
         continue;
       }
 
-      const isRootTailSlide = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
+      const isRecapSlide = isRecapTitle(slide.ar_slide_title || '')
+        || isRecapTitle(slide.en_slide_title || '');
+      const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
+      let isRootTailSlide = afterLastQuestion && !postQuestionSectionActive;
+      if (isThankYouSlideMerged(slide) || isRecapSlide) isRootTailSlide = true;
       if (isRootTailSlide) {
         currentArSection = '';
         currentEnSection = '';
@@ -676,10 +703,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const questionRole = (slide.question_role || '').trim();
       if (questionRole) {
         if (questionRole === 'example') {
-          slide.ar_slide_title = 'Example';
+          slide.ar_slide_title = 'مثال';
           slide.en_slide_title = 'Example';
         } else if (['interactive_example', 'checkpoint', 'practice'].includes(questionRole)) {
-          slide.ar_slide_title = 'Question';
+          slide.ar_slide_title = 'سؤال';
           slide.en_slide_title = 'Question';
         }
 
@@ -721,9 +748,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       } else {
         const arSid = (slide.ar_section_id || '').trim();
         const enSid = (slide.en_section_id || '').trim();
-        if (arSid) currentArSectionId = arSid;
+        if (isSectionId(arSid)) currentArSectionId = arSid;
         else if (currentArSectionId) slide.ar_section_id = currentArSectionId;
-        if (enSid) currentEnSectionId = enSid;
+        if (isSectionId(enSid)) currentEnSectionId = enSid;
         else if (currentEnSectionId) slide.en_section_id = currentEnSectionId;
       }
 
@@ -740,7 +767,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     return {
       processedSlides,
       thankYouFound,
-      slideValidationErrors,
+      slideValidationErrors: slideValidationErrors.concat(sectionIdValidationErrors),
     };
   } catch (e) {
     log(`Could not process file ${basename(filePath)}. Error: ${e.message}`);
@@ -844,8 +871,6 @@ function validateCsvFromRows(rows) {
 function validateCsvNewModeFromRows(rows) {
   const validationErrors = [];
   const idLocations = {};
-  const sectionIdPattern = /^\d{12}$/;
-
   for (const row of rows) {
     const slideNum = row.slide_number;
     const qid = csvCellStr(row.question_id);
@@ -855,9 +880,10 @@ function validateCsvNewModeFromRows(rows) {
     const questionRole = csvCellStr(row.question_role);
     const sectionId = csvCellStr(row.section_id);
 
-    if (sectionId && !sectionIdPattern.test(sectionId)) {
+    if (sectionId && !isSectionId(sectionId)) {
       validationErrors.push(
-        `Row ${slideNum}: Invalid format for section_id '${sectionId}'. Must be a 12-digit ID.`,
+        `Row ${slideNum}: Invalid format for section_id '${sectionId}'. `
+        + "Must be a 12-digit ID (not 'new').",
       );
     }
 
