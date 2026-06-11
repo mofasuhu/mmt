@@ -1,10 +1,14 @@
 /**
  * Lazy ffmpeg.wasm loader and video frame extraction.
- * Loads @ffmpeg/ffmpeg from unpkg (no npm/bundler in the static browser app).
+ * @ffmpeg/ffmpeg is vendored under assets/vendor/ffmpeg (same origin) so Workers
+ * work on GitHub Pages; cross-origin unpkg workers are blocked by the browser.
+ * Core WASM is fetched from unpkg and passed as blob URLs to ffmpeg.load().
  */
 
-const FFMPEG_MODULE_URL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
-const FFMPEG_UTIL_MODULE_URL = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+import { FFmpeg } from '../../assets/vendor/ffmpeg/ffmpeg/index.js';
+import { toBlobURL } from '../../assets/vendor/ffmpeg/util/index.js';
+
+const DEFAULT_CORE_BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
 
 /** @type {object | null} */
 let ffmpegInstance = null;
@@ -15,8 +19,6 @@ let loadPromise = null;
  * @param {object} ctx
  * @param {object} ctx.config
  * @param {string} [ctx.config.ffmpegCoreBaseUrl]
- * @param {string} [ctx.config.ffmpegModuleUrl]
- * @param {string} [ctx.config.ffmpegUtilModuleUrl]
  * @param {Function} ctx.log
  */
 export async function getFFmpeg(ctx) {
@@ -24,20 +26,12 @@ export async function getFFmpeg(ctx) {
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    const ffmpegModuleUrl = ctx?.config?.ffmpegModuleUrl || FFMPEG_MODULE_URL;
-    const utilModuleUrl = ctx?.config?.ffmpegUtilModuleUrl || FFMPEG_UTIL_MODULE_URL;
-
-    const { FFmpeg } = await import(ffmpegModuleUrl);
-    const { toBlobURL } = await import(utilModuleUrl);
-
     const ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => {
       if (ctx?.log) ctx.log(`[ffmpeg] ${message}`);
     });
 
-    const base =
-      ctx?.config?.ffmpegCoreBaseUrl ||
-      'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+    const base = ctx?.config?.ffmpegCoreBaseUrl || DEFAULT_CORE_BASE;
 
     await ffmpeg.load({
       coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
