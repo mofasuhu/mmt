@@ -13,6 +13,7 @@ import { runCleanWrappedSlides } from './cleanWrappedSlides.js';
 import { runAddVerbatimToSlides } from './addVerbatimToSlides.js';
 import { runVideoSlide } from './videoSlide.js';
 import { runRenameSessionFolders } from './renameSessionFolders.js';
+import { cleanupOutputFolders } from '../shared/outputFolders.js';
 
 export const PIPELINE_STEP_LABELS = {
   1: 'download_with_rename',
@@ -120,6 +121,8 @@ export async function runPipeline(ctx, startStep = 1, onStepStatus = null) {
   ctx.log('='.repeat(60));
   ctx.log('Pipeline Orchestrator');
   ctx.log('='.repeat(60));
+
+  await cleanupOutputFolders(ctx.vfs, startStep, ctx.log);
 
   if (startStep <= 1) {
     await initFullLog(ctx.vfs);

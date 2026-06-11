@@ -383,6 +383,15 @@ export async function pickDirectory({ mode = 'readwrite', label = 'folder' } = {
   return new MountedDir(handle, label);
 }
 
+/** Remove every entry in a writable directory handle (does not remove the root). */
+export async function emptyDirectory(dirHandle) {
+  const mount = dirHandle instanceof MountedDir ? dirHandle : new MountedDir(dirHandle, 'output');
+  const names = await mount.listDir('');
+  for (const name of names) {
+    await mount.remove(name, { recursive: true });
+  }
+}
+
 export async function flushVirtualFsToDirectory(vfs, dirHandle, { onProgress } = {}) {
   const mount = new MountedDir(dirHandle, 'output');
   const paths = vfs.allPaths();

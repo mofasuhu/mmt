@@ -5,6 +5,7 @@
 import { createVirtualFs } from './io/virtualFs.js';
 import {
   pickDirectory,
+  emptyDirectory,
   flushVirtualFsToDirectory,
   MountedDir,
   directoryFromDrop,
@@ -319,6 +320,8 @@ async function writeToFolder() {
     log('Output target must be a writable folder (use Browse).');
     return;
   }
+  log('Clearing output folder...');
+  await emptyDirectory(outputDirHandle);
   log('Writing files to output folder...');
   await flushVirtualFsToDirectory(vfs, outputDirHandle.handle, {
     onProgress: (i, total, path) => {
