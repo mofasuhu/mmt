@@ -14,6 +14,11 @@ import {
 } from './io/fsAccess.js';
 import { downloadVfsAsZip } from './io/zipExport.js';
 import { runPipeline, PIPELINE_STEP_LABELS, LAST_PIPELINE_STEP } from './pipeline/runAll.js';
+import {
+  runValidateOnly,
+  FULL_VALIDATION_PATH,
+  SECTIONS_VALIDATION_RESULTS_FILE,
+} from './pipeline/validateOnly.js';
 import { createGoogleAuth, GoogleSheets } from './auth/googleAuth.js';
 import { setMetasessionFetchFn } from './shared/metasessionApi.js';
 import { createAppFetch, isGitHubPagesHost, probeMetasessionApi } from './shared/httpFetch.js';
@@ -101,6 +106,7 @@ function buildCtx() {
     },
     config: {
       fetchFn,
+      proxyUrl: getProxyUrl(),
       linksCsvPath: 'links.csv',
       sessionsDir: 'sessions',
       csvsDir: 'csvs',
@@ -179,13 +185,24 @@ async function loadBundledAssets() {
   }
 }
 
+function setLinksCsvStatus(hint, dropStatus) {
+  const nameEl = $('#links-csv-name');
+  const dropEl = $('#links-csv-drop-status');
+  const zone = $('#drop-links-csv');
+  if (nameEl) nameEl.textContent = hint;
+  if (dropEl) dropEl.textContent = dropStatus;
+  if (zone) {
+    zone.classList.toggle('drop-zone-loaded', !/^not loaded$/i.test(dropStatus));
+  }
+}
+
 async function loadStaticLinksCsv() {
   try {
     const res = await fetch('links.csv');
     if (!res.ok) return false;
     const text = await res.text();
     await vfs.writeText('links.csv', text);
-    $('#links-csv-name').textContent = 'links.csv (bundled)';
+    setLinksCsvStatus('links.csv (bundled)', 'Loaded: links.csv (bundled)');
     log('Loaded links.csv from project folder');
     return true;
   } catch {
@@ -196,7 +213,8 @@ async function loadStaticLinksCsv() {
 async function handleLinksCsv(file) {
   const text = await file.text();
   await vfs.writeText('links.csv', text);
-  $('#links-csv-name').textContent = `Loaded: ${file.name}`;
+  const label = `Loaded: ${file.name}`;
+  setLinksCsvStatus(label, label);
   log(`Loaded links.csv (${file.name})`);
 }
 
@@ -212,7 +230,7 @@ async function useSlidesUrl() {
   }
   const csv = `url,name\n${url},\n`;
   await vfs.writeText('links.csv', csv);
-  $('#links-csv-name').textContent = 'Loaded from pasted URL';
+  setLinksCsvStatus('Loaded from pasted URL', 'Loaded from pasted URL');
   log('Created links.csv from pasted Google Slides URL.');
 }
 
@@ -381,11 +399,77 @@ async function runAll() {
     }
     await runPipeline(buildCtx(), startStep, setStepStatus);
     log('\nPipeline finished. Use "Write to folder" or "Download ZIP" to save output.');
+    const downloadSectionsValidationBtn = $('#download-sections-validation');
+    if (downloadSectionsValidationBtn && (await vfs.exists(SECTIONS_VALIDATION_RESULTS_FILE))) {
+      downloadSectionsValidationBtn.disabled = false;
+    }
   } catch (e) {
     log(`\n❌ ${e.message}`);
   } finally {
     btn.disabled = false;
   }
+}
+
+async function runValidateOnlyMode() {
+  clearLog();
+
+  const validateBtn = $('#validate-only-btn');
+  const runBtn = $('#run-btn');
+  const downloadValidationBtn = $('#download-validation');
+  const downloadSectionsValidationBtn = $('#download-sections-validation');
+  validateBtn.disabled = true;
+  runBtn.disabled = true;
+  if (downloadValidationBtn) downloadValidationBtn.disabled = true;
+  if (downloadSectionsValidationBtn) downloadSectionsValidationBtn.disabled = true;
+
+  try {
+    await loadBundledAssets();
+    if (!(await vfs.exists('links.csv'))) {
+      throw new Error('links.csv is required. Drop or bundle links.csv first.');
+    }
+    const authed = await verifyGoogleAuth();
+    if (!authed) {
+      throw new Error('Google sign-in is required to download presentations.');
+    }
+    await runValidateOnly(buildCtx());
+    log('Download full_validation.txt and sections_validation_results.txt when ready.');
+    if (downloadValidationBtn) downloadValidationBtn.disabled = false;
+    if (downloadSectionsValidationBtn) downloadSectionsValidationBtn.disabled = false;
+  } catch (e) {
+    log(`\n❌ ${e.message}`);
+  } finally {
+    validateBtn.disabled = false;
+    runBtn.disabled = false;
+  }
+}
+
+async function downloadTextReport(vfsPath, downloadName, missingMessage) {
+  try {
+    const text = await vfs.readText(vfsPath);
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = downloadName;
+    a.click();
+  } catch {
+    log(missingMessage);
+  }
+}
+
+async function downloadValidationReport() {
+  await downloadTextReport(
+    FULL_VALIDATION_PATH,
+    'full_validation.txt',
+    'No full_validation.txt yet. Run Validate only first.',
+  );
+}
+
+async function downloadSectionsValidationReport() {
+  await downloadTextReport(
+    SECTIONS_VALIDATION_RESULTS_FILE,
+    'sections_validation_results.txt',
+    'No sections_validation_results.txt yet. Run Validate only or the full pipeline first.',
+  );
 }
 
 function initDropZones() {
@@ -452,6 +536,7 @@ function initUi() {
   $('#pick-cls').addEventListener('click', () => pickClsArchive().catch((e) => log(e.message)));
   $('#pick-slides').addEventListener('click', () => pickSlidesArchive().catch((e) => log(e.message)));
   $('#run-btn').addEventListener('click', runAll);
+  $('#validate-only-btn').addEventListener('click', () => runValidateOnlyMode().catch((e) => log(e.message)));
   $('#write-folder').addEventListener('click', () => writeToFolder().catch((e) => log(e.message)));
   $('#download-zip').addEventListener('click', () => downloadZip().catch((e) => log(e.message)));
   $('#download-log').addEventListener('click', async () => {
@@ -466,6 +551,8 @@ function initUi() {
       log('No full_log.txt yet.');
     }
   });
+  $('#download-validation').addEventListener('click', () => downloadValidationReport().catch((e) => log(e.message)));
+  $('#download-sections-validation').addEventListener('click', () => downloadSectionsValidationReport().catch((e) => log(e.message)));
 }
 
 async function probeApisOnLoad() {

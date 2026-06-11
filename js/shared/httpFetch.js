@@ -22,6 +22,15 @@ export function shouldBypassProxy(url) {
   return NAGWA_DIRECT_HOSTS.has(hostFromUrl(url));
 }
 
+/** Hosts allowed through the CORS proxy (Nagwa APIs + presigned video CDNs). */
+export function isProxyAllowedHost(hostname) {
+  if (!hostname) return false;
+  if (NAGWA_DIRECT_HOSTS.has(hostname)) return true;
+  if (hostname.endsWith('.amazonaws.com')) return true;
+  if (hostname.endsWith('.cloudfront.net')) return true;
+  return false;
+}
+
 export function isDevProxyServer() {
   if (typeof window === 'undefined' || !window.location) return false;
   const { hostname, port } = window.location;
@@ -70,16 +79,22 @@ export function createAppFetch(getProxyUrl) {
         return fetchViaProxy(configured, url, init);
       }
 
+      const proxyFallbacks = [devProxy, configured].filter((p, i, arr) => p && arr.indexOf(p) === i);
+
       try {
         const response = await fetch(url, { ...init, credentials: 'omit', mode: 'cors' });
-        if (response.ok || !configured) {
-          return response;
+        if (response.ok) return response;
+        for (const proxyBase of proxyFallbacks) {
+          try {
+            const proxied = await fetchViaProxy(proxyBase, url, init);
+            if (proxied.ok) return proxied;
+          } catch {
+            /* try next */
+          }
         }
-        // Non-OK direct response — try configured proxy before returning error.
-        return fetchViaProxy(configured, url, init);
+        return response;
       } catch (directErr) {
-        const fallbacks = [configured, devProxy].filter((p, i, arr) => p && arr.indexOf(p) === i);
-        for (const proxyBase of fallbacks) {
+        for (const proxyBase of proxyFallbacks) {
           try {
             return await fetchViaProxy(proxyBase, url, init);
           } catch {
@@ -96,6 +111,35 @@ export function createAppFetch(getProxyUrl) {
 
     return fetchViaProxy(configured, url, init);
   };
+}
+
+/**
+ * Fetch a presigned video/CDN URL server-side via proxy (browser direct GET often 403).
+ * @param {string} url
+ * @param {RequestInit} [init]
+ * @param {string} [proxyUrl]
+ */
+export async function fetchDownloadUrl(url, init = {}, proxyUrl = '') {
+  const configured = (proxyUrl || '').trim().replace(/\/$/, '');
+  const devProxy = devServerProxyBase();
+  const proxies = [devProxy, configured].filter((p, i, arr) => p && arr.indexOf(p) === i);
+  const headers = {
+    'User-Agent': 'video_slide/1.0',
+    Accept: '*/*',
+    ...(init.headers || {}),
+  };
+  const opts = { ...init, headers, credentials: 'omit' };
+
+  for (const proxyBase of proxies) {
+    try {
+      const resp = await fetchViaProxy(proxyBase, url, opts);
+      if (resp.ok) return resp;
+    } catch {
+      /* try next */
+    }
+  }
+
+  return fetch(url, opts);
 }
 
 /**

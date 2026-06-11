@@ -14,15 +14,20 @@ const ARABIC_RE = /[\u0600-\u06FF]/;
 const SCIENCE_KEYWORDS = ['علوم', 'فيزياء', 'كيمياء', 'أحياء'];
 const MATH_ICT_KEYWORDS = ['رياضيات', 'إحصاء', 'تكنولوجيا'];
 
+/** Strip leading/trailing "!" (Python str.strip('!')). */
+export function stripExclamationMarks(text) {
+  return String(text).replace(/^!+/, '').replace(/!+$/, '');
+}
+
 export function isThankYouSlide(slideTitle) {
   if (!slideTitle) return false;
-  const normalized = slideTitle.trim().replace(/!+$/, '').trim().toLowerCase();
+  const normalized = stripExclamationMarks(slideTitle.trim()).trim().toLowerCase();
   return THANK_YOU_PATTERNS.includes(normalized);
 }
 
 export function getStandardizedThankYouTitle(slideTitle) {
   if (!slideTitle) return null;
-  const normalized = slideTitle.trim().replace(/!+$/, '').trim().toLowerCase();
+  const normalized = stripExclamationMarks(slideTitle.trim()).trim().toLowerCase();
   return THANK_YOU_STANDARDIZED[normalized] || null;
 }
 

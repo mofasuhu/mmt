@@ -61,14 +61,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (!ALLOWED_HOSTS.has(targetUrl.hostname)) {
+  const host = targetUrl.hostname;
+  const hostAllowed = ALLOWED_HOSTS.has(host)
+    || host.endsWith('.amazonaws.com')
+    || host.endsWith('.cloudfront.net');
+  if (!hostAllowed) {
     res.writeHead(403, { 'Content-Type': 'text/plain' });
-    res.end(`Host not allowed: ${targetUrl.hostname}`);
+    res.end(`Host not allowed: ${host}`);
     return;
   }
 
   const forwardHeaders = {};
-  for (const key of ['content-type', 'x-api-key', 'authorization', 'accept']) {
+  for (const key of ['content-type', 'x-api-key', 'authorization', 'accept', 'user-agent']) {
     const val = req.headers[key];
     if (val) forwardHeaders[key] = val;
   }

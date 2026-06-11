@@ -27,6 +27,7 @@
       <div class="drop-zone" id="drop-links-csv" tabindex="0">
         <strong>links.csv</strong>
         <p>Drag &amp; drop <code>links.csv</code> here</p>
+        <small id="links-csv-drop-status">Not loaded</small>
       </div>
 
       <div class="auth-block">
@@ -93,6 +94,7 @@
         <input type="number" id="start-step" min="1" max="10" value="1" />
       </label>
       <button type="button" id="run-btn" class="primary">Run pipeline</button>
+      <button type="button" id="validate-only-btn">Validate only</button>
 
       <ol id="step-list" class="step-list"></ol>
 
@@ -100,6 +102,8 @@
         <button type="button" id="write-folder">Write to folder</button>
         <button type="button" id="download-zip">Download ZIP</button>
         <button type="button" id="download-log">Download full_log.txt</button>
+        <button type="button" id="download-validation" disabled>Download full_validation.txt</button>
+        <button type="button" id="download-sections-validation" disabled>Download sections_validation_results.txt</button>
       </div>
     </section>
 
@@ -116,6 +120,6 @@
     <p>Chrome or Edge recommended. On the published site: sign in with Google, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
   </footer>
 
-  <script type="module" src="js/main.js?v=9"></script>
+  <script type="module" src="js/main.js?v=12"></script>
 </body>
 </html>

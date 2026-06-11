@@ -2,6 +2,8 @@
  * Port of download_with_rename.py — download Google Slides as PPTX to sessions/.
  */
 
+import { sanitizePptxDownloadBasenameForPlatform } from '../shared/sessionCsv.js';
+
 const URL_COLUMN_NAME = 'url';
 const NAME_COLUMN_NAME = 'name';
 const PROGRESS_INTERVAL_MS = 200;
@@ -55,11 +57,11 @@ function formatProgressLine(label, downloaded, totalSize, elapsedSec) {
  * @param {string} outputDir
  * @param {Function} log
  */
-async function transformAndDownload(url, authedFetch, vfs, outputDir, log) {
+async function transformAndDownload(url, authedFetch, vfs, outputDir, log, customName = '') {
   const match = url.match(/\/presentation\/d\/([a-zA-Z0-9-_]+)/);
   if (!match) {
     log(`[!] Could not extract Presentation ID from URL: ${url}`);
-    return false;
+    return { ok: false, error: 'Could not extract Presentation ID from URL' };
   }
 
   const presentationId = match[1];
@@ -81,11 +83,10 @@ async function transformAndDownload(url, authedFetch, vfs, outputDir, log) {
       throw new Error(`HTTP ${response.status} ${response.statusText}`);
     }
 
-    const rawFilename = extractFilename(response.headers, presentationId);
-    let sanitizedName = rawFilename.replace(/[\\/*?:"<>]/g, '_');
-    if (!sanitizedName.toLowerCase().endsWith('.pptx')) {
-      sanitizedName = `${sanitizedName}.pptx`;
-    }
+    const rawFilename = customName.trim()
+      ? customName.trim()
+      : extractFilename(response.headers, presentationId);
+    const sanitizedName = sanitizePptxDownloadBasenameForPlatform(rawFilename);
 
     outputPath = `${outputDir}/${sanitizedName}`;
     log(`→ ${sanitizedName}`);
@@ -98,7 +99,7 @@ async function transformAndDownload(url, authedFetch, vfs, outputDir, log) {
       const buf = new Uint8Array(await response.arrayBuffer());
       await vfs.writeBytes(outputPath, buf);
       log(`[${label}] ${(buf.length / 1024).toFixed(1)} KB — done`);
-      return true;
+      return { ok: true, filename: sanitizedName };
     }
 
     /** @type {Uint8Array | null} */
@@ -147,16 +148,16 @@ async function transformAndDownload(url, authedFetch, vfs, outputDir, log) {
 
     if (totalSize > 0 && downloaded !== totalSize) {
       log(`[!] ERROR: Download incomplete for ${sanitizedName}`);
-      return false;
+      return { ok: false, error: 'Download incomplete' };
     }
 
-    return true;
+    return { ok: true, filename: sanitizedName };
   } catch (e) {
     if (outputPath && (await vfs.exists(outputPath))) {
       await vfs.remove(outputPath);
     }
     log(`[!] Error downloading file: ${e.message}`);
-    return false;
+    return { ok: false, error: e.message };
   }
 }
 
@@ -213,17 +214,80 @@ export async function runDownloadWithRename(ctx) {
     if (!url) continue;
 
     log(`\nProcessing row ${i + 1}/${validRows.length}: ${url}`);
-    if (hasNameColumn) {
-      log(`Name from CSV: '${String(row[nameIdx] || '').trim()}'`);
+    const customName = hasNameColumn ? String(row[nameIdx] || '').trim() : '';
+    if (customName) {
+      log(`Name from CSV: '${customName}'`);
     }
 
-    if (await transformAndDownload(url, authedFetch, vfs, outputDir, log)) {
+    const result = await transformAndDownload(url, authedFetch, vfs, outputDir, log, customName);
+    if (result.ok) {
       downloaded += 1;
     }
   }
 
   log('\n--- Script finished. ---');
   return { ok: true, downloaded };
+}
+
+/**
+ * Download every URL in links.csv; return per-row result dicts (validate-only orchestration).
+ * @param {object} ctx
+ * @returns {Promise<{ ok: boolean, results: Array<{ url: string, name: string, filename: string, ok: boolean, error?: string }> }>}
+ */
+export async function downloadAllFromLinks(ctx) {
+  const { vfs, log, config, googleAuth } = ctx;
+  const quiet = config.validateOnlyQuiet === true;
+  const dlLog = quiet ? () => {} : log;
+  const inputCsv = config.linksCsvPath || 'links.csv';
+  const outputDir = config.sessionsDir || 'sessions';
+
+  if (!googleAuth) {
+    return { ok: false, results: [], error: 'googleAuth not configured' };
+  }
+
+  const authedFetch = await googleAuth.getAuthorizedFetch();
+  if (!authedFetch) {
+    return { ok: false, results: [], error: 'Google authentication failed' };
+  }
+
+  if (!(await vfs.exists(inputCsv))) {
+    return { ok: false, results: [], error: `links.csv not found at '${inputCsv}'` };
+  }
+
+  await vfs.mkdir(outputDir, { recursive: true });
+
+  const csvText = await vfs.readText(inputCsv);
+  const { headers, rows } = parseCsvRecords(csvText);
+
+  if (!headers.includes(URL_COLUMN_NAME)) {
+    return { ok: false, results: [], error: `CSV must contain '${URL_COLUMN_NAME}' column` };
+  }
+
+  const hasNameColumn = headers.includes(NAME_COLUMN_NAME);
+  const urlIdx = headers.indexOf(URL_COLUMN_NAME);
+  const nameIdx = hasNameColumn ? headers.indexOf(NAME_COLUMN_NAME) : -1;
+
+  const results = [];
+  const validRows = rows.filter((row) => String(row[urlIdx] || '').trim() !== '');
+
+  for (let i = 0; i < validRows.length; i += 1) {
+    const row = validRows[i];
+    const url = String(row[urlIdx]).trim();
+    const customName = hasNameColumn ? String(row[nameIdx] || '').trim() : '';
+    log(`\nProcessing row ${i + 1}/${validRows.length}: ${url}`);
+    if (customName) log(`Name from CSV: '${customName}'`);
+
+    const dl = await transformAndDownload(url, authedFetch, vfs, outputDir, dlLog, customName);
+    results.push({
+      url,
+      name: customName,
+      filename: dl.filename || '',
+      ok: dl.ok,
+      error: dl.error,
+    });
+  }
+
+  return { ok: true, results };
 }
 
 /**

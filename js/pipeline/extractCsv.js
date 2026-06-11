@@ -1071,9 +1071,15 @@ async function collectSlideIdRowsFromCsv(vfs, csvPath, log) {
   }
 }
 
+let _abortOnError = true;
+let _skipSheets = false;
+
 function abortPipeline(log, message, errors = []) {
   log(`\n❌ ${message}`);
   for (const err of errors) log(`   - ${err}`);
+  if (!_abortOnError) {
+    return;
+  }
   log('   Fix the issue and rerun the full pipeline (run_all.py).');
   throw new PipelineAbortError(message, errors);
 }
@@ -1088,6 +1094,8 @@ function abortPipeline(log, message, errors = []) {
  * @param {string[]} pptxFilenames
  */
 export async function runExtractCsv(ctx, pptxFilenames) {
+  _abortOnError = ctx.abortOnError !== false;
+  _skipSheets = ctx.skipSheets === true;
   const { vfs, log = console.log, googleSheets, config = {} } = ctx;
   const fetchFn = config.fetchFn || fetch;
   const apiOpts = { log, fetchFn };
@@ -1310,7 +1318,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
     log(`Processing Complete. ${validFilesCount} valid CSV file(s) created in '${csvsPath}'.`);
   }
 
-  if (sheetsRowsToUpload.length > 0) {
+  if (!_skipSheets && sheetsRowsToUpload.length > 0) {
     log('\n' + '='.repeat(60));
     log(`Uploading ${sheetsRowsToUpload.length} row(s) to Google Sheets 'temp' tab...`);
     log('='.repeat(60));
@@ -1337,17 +1345,70 @@ export async function runExtractCsv(ctx, pptxFilenames) {
     log('\nNo 12-digit slide_id rows to upload to Google Sheets.');
   }
 
-  if (processingSummary.some((r) => r.status !== 'VALID')) {
-    abortPipeline(log, 'One or more CSV outputs failed');
-  }
-  if (processingSummary.length > 0 && validFilesCount === 0) {
-    abortPipeline(log, 'No valid CSV files were created');
+  if (_abortOnError) {
+    if (processingSummary.some((r) => r.status !== 'VALID')) {
+      abortPipeline(log, 'One or more CSV outputs failed');
+    }
+    if (processingSummary.length > 0 && validFilesCount === 0) {
+      abortPipeline(log, 'No valid CSV files were created');
+    }
   }
 
   return {
-    ok: true,
+    ok: processingSummary.every((r) => r.status === 'VALID') && validFilesCount > 0,
     processingSummary,
     validFilesCount,
     sheetsRowsQueued: sheetsRowsToUpload.length,
+    csvsPath,
   };
+}
+
+/**
+ * Validate one PPTX (step 2) without aborting the outer validate-only run.
+ */
+export function buildCsvOutcomes(processingSummary, csvsPath) {
+  const outcomes = [];
+  for (const item of processingSummary || []) {
+    const fname = String(item.filename || '');
+    const base = fname.split(' (')[0].trim();
+    const mid = /^\d+/.test(base.split('_')[0]) ? base.split('_')[0] : '';
+    let csvPath = '';
+    if (item.status === 'VALID' && base.endsWith('.csv')) {
+      csvPath = `${csvsPath}/${base}`;
+    }
+    const errs = item.errors || [];
+    const metasessionErrors = errs.filter((e) => /metasession|metadata/i.test(e));
+    const csvErrors = errs.filter((e) => !metasessionErrors.includes(e));
+    outcomes.push({
+      csvFilename: fname,
+      csvPath,
+      metasessionId: mid,
+      csvErrors,
+      metasessionErrors,
+    });
+  }
+  return outcomes;
+}
+
+export async function validatePresentationFile(ctx, pptxFilename) {
+  const csvsPath = ctx.config?.csvsPath || 'csvs';
+  const pptxErrors = [];
+
+  try {
+    const result = await runExtractCsv(
+      { ...ctx, abortOnError: false, skipSheets: true },
+      [pptxFilename],
+    );
+    return {
+      pptxErrors,
+      csvOutcomes: buildCsvOutcomes(result.processingSummary, csvsPath),
+    };
+  } catch (e) {
+    if (e instanceof PipelineAbortError) {
+      pptxErrors.push(...(e.errors || [e.message]));
+    } else {
+      pptxErrors.push(e.message);
+    }
+    return { pptxErrors, csvOutcomes: [] };
+  }
 }

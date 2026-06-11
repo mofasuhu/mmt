@@ -358,6 +358,110 @@ function collectQuestionIdsForApi(rows) {
   return ids;
 }
 
+function checkMissingQuestionsInCsv(rows, log = () => {}) {
+  const missingRecords = [];
+  for (const row of rows) {
+    const qId = row.question_id;
+    if (isBlank(qId)) continue;
+    getQuestionType(qId, missingRecords, log);
+  }
+  return missingRecords.map(
+    (m) => `Question ID '${m['Question ID']}' not found in QMS metadata API.`,
+  );
+}
+
+/**
+ * Run step-3 validation for one CSV without building XML.
+ * @returns {Promise<{ sectionErrors: string[], missingQuestionErrors: string[], metasessionId: string }>}
+ */
+export function resetXmlBuilderCaches() {
+  questionMetadataCache.clear();
+  questionTranslationCache.clear();
+}
+
+export async function validateSessionCsv(
+  ctx,
+  sessionCsvPath,
+  {
+    metasessionDetailsCache = null,
+    writeReports = true,
+    fatalMetasessionApi = false,
+  } = {},
+) {
+  const { log, config } = ctx;
+  const fetchFn = config?.fetchFn || fetch;
+  const cache = metasessionDetailsCache ?? new Map();
+  const filename = sessionCsvPath.split('/').pop();
+
+  let metasessionId;
+  try {
+    metasessionId = filename.split('_')[0];
+    if (!/^\d+$/.test(metasessionId)) throw new Error('Extracted ID is not a number.');
+  } catch (e) {
+    return {
+      sectionErrors: [`Could not extract metasession ID from '${filename}': ${e.message || e}`],
+      missingQuestionErrors: [],
+      metasessionId: '',
+    };
+  }
+
+  let sessionRows;
+  try {
+    sessionRows = await loadSessionRows(ctx.vfs, sessionCsvPath);
+  } catch (e) {
+    return {
+      sectionErrors: [`Could not read CSV '${filename}': ${e.message || e}`],
+      missingQuestionErrors: [],
+      metasessionId,
+    };
+  }
+
+  let detailsRow;
+  let apiData;
+  if (cache.has(metasessionId)) {
+    ({ detailsRow, apiData } = cache.get(metasessionId));
+  } else {
+    apiData = await getRawMetasessionData(metasessionId, {
+      fatal: fatalMetasessionApi,
+      log,
+      fetchFn,
+    });
+    if (!apiData) {
+      return {
+        sectionErrors: [`Could not fetch metasession data for '${metasessionId}' from API.`],
+        missingQuestionErrors: [],
+        metasessionId,
+      };
+    }
+    detailsRow = buildReportRow(apiData, { extended: true, metasessionId });
+    cache.set(metasessionId, { detailsRow, apiData });
+  }
+
+  const questionIdsForApi = collectQuestionIdsForApi(sessionRows);
+  if (questionIdsForApi.length) {
+    await fetchQuestionMetadata(questionIdsForApi, fetchFn, log);
+  }
+
+  const sessionSubject = String(detailsRow.Subject ?? '');
+  if (subjectRequiresTranslation(sessionSubject) && questionIdsForApi.length) {
+    await fetchQuestionTranslations(questionIdsForApi, fetchFn, log);
+  }
+
+  const idsNote = subjectRequiresTranslation(sessionSubject)
+    ? 'IDs compared after xml_builder translation (section API uses translated question_ids).'
+    : 'IDs compared from CSV (no question-id translation for this subject).';
+
+  const sectionErrors = await validateSectionsInCsv(ctx, sessionCsvPath, metasessionId, {
+    questionIdTransform: (q) => translateQuestionId(q, sessionSubject, log),
+    questionIdsNote: idsNote,
+    writeReports,
+  });
+
+  const missingQuestionErrors = checkMissingQuestionsInCsv(sessionRows, log);
+
+  return { sectionErrors, missingQuestionErrors, metasessionId };
+}
+
 function getQuestionType(qId, missingQuestionsList, log) {
   if (isBlank(qId)) return 'N/A';
 

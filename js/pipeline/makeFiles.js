@@ -371,6 +371,7 @@ export async function runMakeFiles(ctx) {
       }
 
       if (!createdFolders.has(slideId)) {
+        await vfs.mkdir(slideFolderPath, { recursive: true });
         createdFolders.add(slideId);
       }
 

@@ -14,6 +14,7 @@ import { runAddVerbatimToSlides } from './addVerbatimToSlides.js';
 import { runVideoSlide } from './videoSlide.js';
 import { runRenameSessionFolders } from './renameSessionFolders.js';
 import { cleanupOutputFolders } from '../shared/outputFolders.js';
+import { isMergedPptxBasename } from '../shared/sessionCsv.js';
 
 export const PIPELINE_STEP_LABELS = {
   1: 'download_with_rename',
@@ -73,8 +74,8 @@ async function processExtractCsvStage(ctx) {
     return results;
   }
 
-  const filesWithPipe = pptxFiles.filter((f) => f.includes('|'));
-  const filesWithoutPipe = pptxFiles.filter((f) => !f.includes('|'));
+  const filesWithPipe = pptxFiles.filter((f) => isMergedPptxBasename(f));
+  const filesWithoutPipe = pptxFiles.filter((f) => !isMergedPptxBasename(f));
 
   if (filesWithoutPipe.length) {
     ctx.log(`\nFound ${filesWithoutPipe.length} file(s) without '|' for extract_csv`);

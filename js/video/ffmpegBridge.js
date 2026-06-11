@@ -1,26 +1,34 @@
 /**
  * Lazy ffmpeg.wasm loader and video frame extraction.
+ * Loads @ffmpeg/ffmpeg from unpkg (no npm/bundler in the static browser app).
  */
 
-/** @type {import('@ffmpeg/ffmpeg').FFmpeg | null} */
+const FFMPEG_MODULE_URL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+const FFMPEG_UTIL_MODULE_URL = 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+
+/** @type {object | null} */
 let ffmpegInstance = null;
-/** @type {Promise<import('@ffmpeg/ffmpeg').FFmpeg> | null} */
+/** @type {Promise<object> | null} */
 let loadPromise = null;
 
 /**
  * @param {object} ctx
  * @param {object} ctx.config
  * @param {string} [ctx.config.ffmpegCoreBaseUrl]
+ * @param {string} [ctx.config.ffmpegModuleUrl]
+ * @param {string} [ctx.config.ffmpegUtilModuleUrl]
  * @param {Function} ctx.log
- * @returns {Promise<import('@ffmpeg/ffmpeg').FFmpeg>}
  */
 export async function getFFmpeg(ctx) {
   if (ffmpegInstance) return ffmpegInstance;
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-    const { toBlobURL } = await import('@ffmpeg/util');
+    const ffmpegModuleUrl = ctx?.config?.ffmpegModuleUrl || FFMPEG_MODULE_URL;
+    const utilModuleUrl = ctx?.config?.ffmpegUtilModuleUrl || FFMPEG_UTIL_MODULE_URL;
+
+    const { FFmpeg } = await import(ffmpegModuleUrl);
+    const { toBlobURL } = await import(utilModuleUrl);
 
     const ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => {

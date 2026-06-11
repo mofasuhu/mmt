@@ -17,6 +17,7 @@ import {
   isSectionId,
   isRecapTitle,
   sectionIdValidationError,
+  splitMergedPptxBasename,
   csvCellStr,
   rowHasPrimaryId,
   rowRequiresEmptySlideId,
@@ -27,7 +28,8 @@ import {
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
-import { getNumeralConvention, collectSlideTexts } from '../pptx/tagParser.js';
+import { getNumeralConvention, collectSlideTexts, stripExclamationMarks } from '../pptx/tagParser.js';
+import { buildCsvOutcomes } from './extractCsv.js';
 
 const QUESTION_ID_PATTERN = /^\d{12}(\.\d+)?$/;
 const ARABIC_RE = /[\u0600-\u06FF]/;
@@ -265,21 +267,12 @@ function extractPurposeFromNotes(notesText) {
 }
 
 function pptxLanguageStems(pptxFilename) {
-  const base = stemName(basename(pptxFilename)).trim();
-  if (!base.includes('|')) return [base, base];
-  const parts = base.split('|').map((p) => p.trim()).filter(Boolean);
-  if (parts.length === 1) return [parts[0], parts[0]];
-  const arParts = parts.filter((p) => ARABIC_RE.test(p));
-  const enParts = parts.filter((p) => !ARABIC_RE.test(p));
-  if (arParts.length === 1 && enParts.length === 1) {
-    return [arParts[0], enParts[0]];
-  }
-  return [parts[parts.length - 1], parts[0]];
+  return splitMergedPptxBasename(basename(pptxFilename));
 }
 
 function isThankYouSlideMerged(slideData) {
-  const enTitle = (slideData.en_slide_title || '').trim().toLowerCase().replace(/!+$/, '');
-  const arTitle = (slideData.ar_slide_title || '').trim().replace(/!+$/, '');
+  const enTitle = stripExclamationMarks((slideData.en_slide_title || '').trim().toLowerCase());
+  const arTitle = stripExclamationMarks((slideData.ar_slide_title || '').trim());
   const arNormalized = arTitle.replace(/ً/g, '');
   return enTitle === 'thank you' && arNormalized === 'شكرا جزيلا';
 }
@@ -1293,9 +1286,15 @@ function buildLegacyLangRows(slides, lang) {
   return rows;
 }
 
+let _abortOnError = true;
+let _skipSheets = false;
+
 function abortPipeline(log, message, errors = []) {
   log(`\n❌ ${message}`);
   for (const err of errors) log(`   - ${err}`);
+  if (!_abortOnError) {
+    return;
+  }
   log('   Fix the issue and rerun the full pipeline (run_all.py).');
   throw new PipelineAbortError(message, errors);
 }
@@ -1356,6 +1355,8 @@ async function processAndValidateCsvNewMode(
  * @param {string[]} pptxFilenames
  */
 export async function runExtractCsvMerged(ctx, pptxFilenames) {
+  _abortOnError = ctx.abortOnError !== false;
+  _skipSheets = ctx.skipSheets === true;
   const { vfs, log = console.log, googleSheets, config = {} } = ctx;
   const sessionsPath = config.sessionsPath || 'sessions';
   const csvsPath = config.csvsPath || 'csvs';
@@ -1434,13 +1435,35 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
         const thankYouErr = [
           "Missing 'Thank You' slide (en_slide_title='Thank You', ar_slide_title='شكرًا جزيلًا')",
         ];
+        processingSummary.push({
+          filename: `${arPptxStem}_ar.csv (Not Created)`,
+          status: 'FAILED',
+          errors: thankYouErr,
+        });
+        processingSummary.push({
+          filename: `${enPptxStem}_en.csv (Not Created)`,
+          status: 'FAILED',
+          errors: thankYouErr,
+        });
         abortPipeline(log, `Missing 'Thank You' slide in ${filename}`, thankYouErr);
+        return;
       }
 
       if (slideValidationErrors.length > 0) {
         log('   [FAILURE] Slide structure validation failed.');
         for (const err of slideValidationErrors) log(`     - ${err}`);
+        processingSummary.push({
+          filename: `${arPptxStem}_ar.csv (Not Created)`,
+          status: 'FAILED',
+          errors: slideValidationErrors,
+        });
+        processingSummary.push({
+          filename: `${enPptxStem}_en.csv (Not Created)`,
+          status: 'FAILED',
+          errors: slideValidationErrors,
+        });
         abortPipeline(log, `Slide structure validation failed for ${filename}`, slideValidationErrors);
+        return;
       }
     } else {
       allSlidesData = tempSlides;
@@ -1469,44 +1492,63 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
       const enMetaId = csvCellStr(slide1.en_metasession_id);
 
       if (!arMetaId) {
-        abortPipeline(log, `ar_metasession_id is missing for ${filename}`, ['ar_metasession_id is missing']);
+        processingSummary.push({
+          filename: `${arPptxStem}_ar.csv (Not Created)`,
+          status: 'FAILED',
+          errors: ['ar_metasession_id is missing'],
+        });
+        if (_abortOnError) {
+          abortPipeline(log, `ar_metasession_id is missing for ${filename}`, ['ar_metasession_id is missing']);
+        }
       }
       if (!enMetaId) {
-        abortPipeline(log, `en_metasession_id is missing for ${filename}`, ['en_metasession_id is missing']);
+        processingSummary.push({
+          filename: `${enPptxStem}_en.csv (Not Created)`,
+          status: 'FAILED',
+          errors: ['en_metasession_id is missing'],
+        });
+        if (_abortOnError) {
+          abortPipeline(log, `en_metasession_id is missing for ${filename}`, ['en_metasession_id is missing']);
+        }
       }
 
-      const arReport = sessionReportMap[arMetaId];
-      const enReport = sessionReportMap[enMetaId];
-      const arFirstTitle = getFirstSlideTitleFromReport(arReport);
-      const enFirstTitle = getFirstSlideTitleFromReport(enReport);
+      if (arMetaId) {
+        const arReport = sessionReportMap[arMetaId];
+        const arFirstTitle = getFirstSlideTitleFromReport(arReport);
+        const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, arFirstTitle);
+        const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
+        const arResult = await processAndValidateCsvNewMode(
+          vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
+        );
+        processingSummary.push({
+          filename: basename(arSavePath),
+          status: arResult.status,
+          errors: arResult.errors,
+        });
+        if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
+        else if (_abortOnError) {
+          abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+        }
+      }
 
-      const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, arFirstTitle);
-      const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, enFirstTitle);
-
-      const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
-      const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
-
-      const arResult = await processAndValidateCsvNewMode(
-        vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
-      );
-      processingSummary.push({
-        filename: basename(arSavePath),
-        status: arResult.status,
-        errors: arResult.errors,
-      });
-      if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
-      else abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
-
-      const enResult = await processAndValidateCsvNewMode(
-        vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
-      );
-      processingSummary.push({
-        filename: basename(enSavePath),
-        status: enResult.status,
-        errors: enResult.errors,
-      });
-      if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
-      else abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+      if (enMetaId) {
+        const enReport = sessionReportMap[enMetaId];
+        const enFirstTitle = getFirstSlideTitleFromReport(enReport);
+        const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, enFirstTitle);
+        const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
+        const enResult = await processAndValidateCsvNewMode(
+          vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
+        );
+        processingSummary.push({
+          filename: basename(enSavePath),
+          status: enResult.status,
+          errors: enResult.errors,
+        });
+        if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
+        else if (_abortOnError) {
+          abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+        }
+      }
 
       continue;
     }
@@ -1514,57 +1556,81 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
     propagateBilingualSectionIds(allSlidesData);
     const legacyColumns = [...BASE_COLUMNS, ...META_COLUMNS, 'slide_purpose'];
 
+    let arPrefix = arPptxStem;
     const arMetaId = csvCellStr(slide1.ar_metasession_id);
+    let arMetaErrors = [];
+    let arValid = Boolean(arMetaId);
     if (!arMetaId) {
-      abortPipeline(
-        log,
-        `Metadata validation failed for AR (${filename})`,
-        ["Validation Error: Mandatory tag 'ar_metasession_id' is missing from the first slide."],
-      );
-    }
-    const { valid: arValid, errors: arMetaErrors } = validateMetasessionData(
-      slide1, sessionReportMap, 'ar',
-    );
-    if (!arValid) {
-      abortPipeline(log, `Metadata validation failed for AR (${filename})`, arMetaErrors);
+      arMetaErrors = ["Validation Error: Mandatory tag 'ar_metasession_id' is missing from the first slide."];
+      arValid = false;
+    } else {
+      ({ valid: arValid, errors: arMetaErrors } = validateMetasessionData(
+        slide1, sessionReportMap, 'ar',
+      ));
+      if (arValid) arPrefix = `${arMetaId}_${arPptxStem}`;
     }
 
-    const arRows = buildLegacyLangRows(allSlidesData, 'ar');
-    const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
-    const arResult = await processAndValidateCsv(vfs, arRows, legacyColumns, arSavePath, log);
-    processingSummary.push({
-      filename: basename(arSavePath),
-      status: arResult.status,
-      errors: arResult.errors,
-    });
-    if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
-    else abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+    if (arValid) {
+      const arRows = buildLegacyLangRows(allSlidesData, 'ar');
+      const arSavePath = joinPath(csvsPath, `${arPrefix}_ar.csv`);
+      const arResult = await processAndValidateCsv(vfs, arRows, legacyColumns, arSavePath, log);
+      processingSummary.push({
+        filename: basename(arSavePath),
+        status: arResult.status,
+        errors: arResult.errors,
+      });
+      if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
+      else if (_abortOnError) {
+        abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+      }
+    } else {
+      processingSummary.push({
+        filename: `${arPrefix}_ar.csv (Not Created)`,
+        status: 'FAILED',
+        errors: arMetaErrors,
+      });
+      if (_abortOnError) {
+        abortPipeline(log, `Metadata validation failed for AR (${filename})`, arMetaErrors);
+      }
+    }
 
+    let enPrefix = enPptxStem;
     const enMetaId = csvCellStr(slide1.en_metasession_id);
+    let enMetaErrors = [];
+    let enValid = Boolean(enMetaId);
     if (!enMetaId) {
-      abortPipeline(
-        log,
-        `Metadata validation failed for EN (${filename})`,
-        ["Validation Error: Mandatory tag 'en_metasession_id' is missing from the first slide."],
-      );
-    }
-    const { valid: enValid, errors: enMetaErrors } = validateMetasessionData(
-      slide1, sessionReportMap, 'en',
-    );
-    if (!enValid) {
-      abortPipeline(log, `Metadata validation failed for EN (${filename})`, enMetaErrors);
+      enMetaErrors = ["Validation Error: Mandatory tag 'en_metasession_id' is missing from the first slide."];
+      enValid = false;
+    } else {
+      ({ valid: enValid, errors: enMetaErrors } = validateMetasessionData(
+        slide1, sessionReportMap, 'en',
+      ));
+      if (enValid) enPrefix = `${enMetaId}_${enPptxStem}`;
     }
 
-    const enRows = buildLegacyLangRows(allSlidesData, 'en');
-    const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
-    const enResult = await processAndValidateCsv(vfs, enRows, legacyColumns, enSavePath, log);
-    processingSummary.push({
-      filename: basename(enSavePath),
-      status: enResult.status,
-      errors: enResult.errors,
-    });
-    if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
-    else abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+    if (enValid) {
+      const enRows = buildLegacyLangRows(allSlidesData, 'en');
+      const enSavePath = joinPath(csvsPath, `${enPrefix}_en.csv`);
+      const enResult = await processAndValidateCsv(vfs, enRows, legacyColumns, enSavePath, log);
+      processingSummary.push({
+        filename: basename(enSavePath),
+        status: enResult.status,
+        errors: enResult.errors,
+      });
+      if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
+      else if (_abortOnError) {
+        abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+      }
+    } else {
+      processingSummary.push({
+        filename: `${enPrefix}_en.csv (Not Created)`,
+        status: 'FAILED',
+        errors: enMetaErrors,
+      });
+      if (_abortOnError) {
+        abortPipeline(log, `Metadata validation failed for EN (${filename})`, enMetaErrors);
+      }
+    }
   }
 
   log('\n' + '='.repeat(60));
@@ -1584,7 +1650,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
   log('-'.repeat(60));
   log(`Processing Complete. ${validFilesCount} valid CSV file(s) created in '${csvsPath}'.`);
 
-  if (sheetsRowsToUpload.length > 0) {
+  if (!_skipSheets && sheetsRowsToUpload.length > 0) {
     log('\n' + '='.repeat(60));
     log(`Uploading ${sheetsRowsToUpload.length} row(s) to Google Sheets 'temp' tab...`);
     log('='.repeat(60));
@@ -1608,17 +1674,43 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
     log('\nNo 12-digit slide_id rows to upload to Google Sheets.');
   }
 
-  if (processingSummary.some((r) => r.status !== 'VALID')) {
-    abortPipeline(log, 'One or more CSV outputs failed');
-  }
-  if (processingSummary.length > 0 && validFilesCount === 0) {
-    abortPipeline(log, 'No valid CSV files were created');
+  if (_abortOnError) {
+    if (processingSummary.some((r) => r.status !== 'VALID')) {
+      abortPipeline(log, 'One or more CSV outputs failed');
+    }
+    if (processingSummary.length > 0 && validFilesCount === 0) {
+      abortPipeline(log, 'No valid CSV files were created');
+    }
   }
 
   return {
-    ok: true,
+    ok: processingSummary.every((r) => r.status === 'VALID') && validFilesCount > 0,
     processingSummary,
     validFilesCount,
     sheetsRowsQueued: sheetsRowsToUpload.length,
+    csvsPath,
   };
+}
+
+export async function validatePresentationFile(ctx, pptxFilename) {
+  const csvsPath = ctx.config?.csvsPath || 'csvs';
+  const pptxErrors = [];
+
+  try {
+    const result = await runExtractCsvMerged(
+      { ...ctx, abortOnError: false, skipSheets: true },
+      [pptxFilename],
+    );
+    return {
+      pptxErrors,
+      csvOutcomes: buildCsvOutcomes(result.processingSummary, csvsPath),
+    };
+  } catch (e) {
+    if (e instanceof PipelineAbortError) {
+      pptxErrors.push(...(e.errors || [e.message]));
+    } else {
+      pptxErrors.push(e.message);
+    }
+    return { pptxErrors, csvOutcomes: [] };
+  }
 }

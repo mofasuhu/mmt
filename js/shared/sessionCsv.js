@@ -24,6 +24,56 @@ const LANGUAGE_ALIASES = {
   german: 'de',
 };
 
+/** Bilingual merged-deck delimiters: legacy pipe + Windows-safe `` __ ``. */
+export const MERGED_PPTX_DELIMITERS = ['|', ' __ '];
+const ARABIC_SCRIPT_RE = /[\u0600-\u06FF]/;
+const WINDOWS_MERGED_PPTX_DELIMITER = ' __ ';
+
+export function isMergedPptxBasename(name) {
+  const base = name.toLowerCase().endsWith('.pptx')
+    ? name.slice(0, -5).trim()
+    : String(name).trim();
+  return MERGED_PPTX_DELIMITERS.some((delim) => base.includes(delim));
+}
+
+/** @returns {[string, string]} arStem, enStem */
+export function splitMergedPptxBasename(name) {
+  const base = (name.toLowerCase().endsWith('.pptx')
+    ? name.slice(0, -5)
+    : String(name)).trim();
+  const delim = MERGED_PPTX_DELIMITERS.find((d) => base.includes(d));
+  if (!delim) return [base, base];
+
+  const parts = base.split(delim).map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 1) return [parts[0], parts[0]];
+
+  const arParts = parts.filter((p) => ARABIC_SCRIPT_RE.test(p));
+  const enParts = parts.filter((p) => !ARABIC_SCRIPT_RE.test(p));
+  if (arParts.length === 1 && enParts.length === 1) {
+    return [arParts[0], enParts[0]];
+  }
+  return [parts[parts.length - 1], parts[0]];
+}
+
+export function sanitizePptxDownloadBasename(name, { windowsSafe = false } = {}) {
+  let sanitized = String(name).trim().replace(/[\\/*?:"<>]/g, '_');
+  if (windowsSafe) {
+    sanitized = sanitized.replace(/\s*\|\s*/g, WINDOWS_MERGED_PPTX_DELIMITER);
+  }
+  if (!sanitized.toLowerCase().endsWith('.pptx')) {
+    sanitized = `${sanitized}.pptx`;
+  }
+  return sanitized;
+}
+
+function isWindowsPlatform() {
+  return typeof navigator !== 'undefined' && /Win/i.test(navigator.userAgent);
+}
+
+export function sanitizePptxDownloadBasenameForPlatform(name) {
+  return sanitizePptxDownloadBasename(name, { windowsSafe: isWindowsPlatform() });
+}
+
 /** Canonical Example/Question titles → session language (matches session_csv.py). */
 const CANONICAL_SLIDE_TITLES = {
   question: { ar: 'سؤال', en: 'Question' },

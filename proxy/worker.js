@@ -32,9 +32,16 @@ export default {
       return new Response('Invalid url', { status: 400, headers: corsHeaders });
     }
 
-    const allowedHosts = (env.ALLOWED_HOSTS || 'admin.classes.nagwa.com,qms-api.nagwa.com,12digit.nagwa.com').split(',');
-    if (!allowedHosts.some((h) => targetUrl.hostname === h.trim())) {
-      return new Response(`Host not allowed: ${targetUrl.hostname}`, { status: 403, headers: corsHeaders });
+    const allowedHosts = (env.ALLOWED_HOSTS || 'admin.classes.nagwa.com,qms-api.nagwa.com,12digit.nagwa.com')
+      .split(',')
+      .map((h) => h.trim())
+      .filter(Boolean);
+    const host = targetUrl.hostname;
+    const hostAllowed = allowedHosts.includes(host)
+      || host.endsWith('.amazonaws.com')
+      || host.endsWith('.cloudfront.net');
+    if (!hostAllowed) {
+      return new Response(`Host not allowed: ${host}`, { status: 403, headers: corsHeaders });
     }
 
     const forwardHeaders = new Headers();

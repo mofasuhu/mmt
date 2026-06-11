@@ -8,6 +8,7 @@ import {
   isTwelveDigitId,
   loadSessionRows,
 } from '../shared/sessionCsv.js';
+import { fetchDownloadUrl } from '../shared/httpFetch.js';
 import { extractFrame } from '../video/ffmpegBridge.js';
 import {
   applyVideoOverlays,
@@ -114,6 +115,7 @@ async function fetchPresignedVideoUrl(ctx, videoId) {
     const resp = await fetchFn(apiUrl, {
       headers: {
         'X-API-KEY': apiKey,
+        'User-Agent': 'video_slide/1.0',
         Accept: 'application/json',
       },
     });
@@ -157,10 +159,10 @@ async function fetchPresignedVideoUrl(ctx, videoId) {
  * @returns {Promise<Uint8Array | null>}
  */
 async function downloadBytes(ctx, url, label, onProgress) {
-  const fetchFn = ctx.fetchFn || ctx.config?.fetchFn || fetch;
+  const proxyUrl = ctx.config?.proxyUrl || '';
   try {
     onProgress?.(label, 'connecting…');
-    const resp = await fetchFn(url);
+    const resp = await fetchDownloadUrl(url, {}, proxyUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
     const total = Number(resp.headers.get('content-length') || 0) || null;

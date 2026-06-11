@@ -257,6 +257,7 @@ export async function validateSectionsInCsv(
     questionIdsNote = '',
     fetchFn = null,
     log = null,
+    writeReports = true,
   } = {},
 ) {
   if (!metasessionId) return [];
@@ -268,12 +269,14 @@ export async function validateSectionsInCsv(
   const rows = await loadSessionRows(vfs, csvPath);
   let sectionMap = await collectSectionQuestionMapFromRows(rows);
   if (!Object.keys(sectionMap).length) {
-    const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    await appendResults(
-      vfs,
-      SECTIONS_VALIDATION_RESULTS_FILE,
-      `${'-'.repeat(80)}\nChecked at: ${stamp}\nCSV file: ${csvPath.split('/').pop()}\nMetasession ID: ${metasessionId}\nResult: No section_id values found in this CSV — nothing to validate.\n\n`,
-    );
+    if (writeReports) {
+      const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      await appendResults(
+        vfs,
+        SECTIONS_VALIDATION_RESULTS_FILE,
+        `${'-'.repeat(80)}\nChecked at: ${stamp}\nCSV file: ${csvPath.split('/').pop()}\nMetasession ID: ${metasessionId}\nResult: No section_id values found in this CSV — nothing to validate.\n\n`,
+      );
+    }
     return [];
   }
 
@@ -284,7 +287,7 @@ export async function validateSectionsInCsv(
   for (const [sectionId, qids] of Object.entries(sectionMap)) {
     if (!sectionId) continue;
     const errs = await validateSectionAgainstMetasession(sectionId, metasessionId, qids, {
-      vfs,
+      vfs: writeReports ? vfs : null,
       metasessionData,
       csvBasename: csvPath.split('/').pop(),
       questionIdsNote,

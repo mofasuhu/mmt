@@ -9,6 +9,7 @@
   --success: #2ecc71;
   --fail: #e74c3c;
   --skip: #95a5a6;
+  --log-max-height: calc(100vh - 11.5rem);
 }
 
 * {
@@ -51,6 +52,10 @@ body {
 @media (max-width: 1100px) {
   .layout {
     grid-template-columns: 1fr;
+  }
+
+  :root {
+    --log-max-height: min(55vh, 420px);
   }
 }
 
@@ -176,13 +181,20 @@ button:disabled {
 .log-panel-wrap {
   display: flex;
   flex-direction: column;
-  min-height: 400px;
+  height: var(--log-max-height);
+  max-height: var(--log-max-height);
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.log-panel-wrap h2 {
+  flex: 0 0 auto;
 }
 
 .log-container {
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   background: #0a0e14;
   border: 1px solid var(--border);
@@ -191,17 +203,19 @@ button:disabled {
 }
 
 .log-panel {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   margin: 0;
   padding: 0.75rem;
   background: transparent;
   border: none;
   border-radius: 0;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  word-break: normal;
 }
 
 .log-progress {
@@ -264,6 +278,15 @@ code {
 .drop-zone.drag-over {
   border-color: var(--accent);
   background: rgba(0, 117, 187, 0.12);
+}
+
+.drop-zone-loaded {
+  border-color: var(--success);
+  background: rgba(46, 204, 113, 0.08);
+}
+
+.drop-zone-loaded #links-csv-drop-status {
+  color: var(--success);
 }
 
 .drop-zone:focus-visible {
