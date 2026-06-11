@@ -78,7 +78,7 @@ async function appendResults(vfs, resultsPath, block) {
 
 export async function initSectionsValidationResults(vfs) {
   const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: CSV question_ids must exactly match section API question_ids.\nsection_type=revision: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
+  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: every CSV question_id must appear in section API question_ids (the API may list extra questions not used in this session).\nsection_type=revision: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
   await vfs.writeText(SECTIONS_VALIDATION_RESULTS_FILE, text);
 }
 
@@ -192,11 +192,6 @@ export async function validateSectionAgainstMetasession(
         `[section_id=${sectionId}] ${missingQids.length} question_id(s) used in processing but NOT in section.question_ids: ${JSON.stringify(missingQids)}`,
       );
     }
-    if (unusedInCsv.length) {
-      errors.push(
-        `[section_id=${sectionId}] ${unusedInCsv.length} question_id(s) in section.question_ids but NOT used in CSV: ${JSON.stringify(unusedInCsv)}`,
-      );
-    }
   }
 
   if (vfs) {
@@ -224,12 +219,12 @@ export async function validateSectionAgainstMetasession(
         block += '  Question-id cross-check SKIPPED (section_type=revision).\n\n';
       } else {
         if (questionIdsNote) block += `  ${questionIdsNote}\n`;
-        block += `  Exact match required (section_type=${normalizedSectionType}).\n`;
+        block += `  CSV must be a subset of section API (section_type=${normalizedSectionType}); extra API question_ids are allowed.\n`;
         block += `  Unique question_id(s) checked for this section: ${usedUnique.length}\n`;
         block += `  question_ids returned by section API: ${apiQuestionIds.size}\n`;
         block += `  Used in CSV and listed in section API (matched): ${matchedQids.length}\n`;
-        block += `  Used in CSV but NOT in section API (missing): ${missingQids.length}\n`;
-        block += `  In section API but not used in this CSV: ${unusedInCsv.length}\n\n`;
+        block += `  Used in CSV but NOT in section API (missing, fails validation): ${missingQids.length}\n`;
+        block += `  In section API but not used in this CSV (informational only): ${unusedInCsv.length}\n\n`;
       }
       if (errors.length) {
         block += '--- Issues ---\n';
