@@ -4,7 +4,7 @@
 
 import { ID_URL } from '../shared/constants.js';
 import { getRawMetasessionData } from '../shared/metasessionApi.js';
-import { loadSessionRows } from '../shared/sessionCsv.js';
+import { loadSessionRows, normalizeMetasessionId } from '../shared/sessionCsv.js';
 
 /**
  * @param {object} ctx
@@ -362,9 +362,9 @@ async function processSession(ctx, sessionFolder, csvPath) {
   let metasessionId = sessionId;
   if ('metasession_id' in rows[0]) {
     for (const row of rows) {
-      const v = String(row.metasession_id || '').trim();
-      if (v) {
-        metasessionId = v;
+      const normalized = normalizeMetasessionId(row.metasession_id);
+      if (normalized) {
+        metasessionId = normalized;
         break;
       }
     }

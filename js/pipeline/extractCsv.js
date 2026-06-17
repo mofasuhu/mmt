@@ -17,15 +17,21 @@ import {
 } from '../shared/constants.js';
 import {
   tocTitleForLanguage,
+  validatePptxSlide1MetasessionId,
+  validatePptxSlide2Toc,
   isTwelveDigitId,
   isSectionId,
   isRecapTitle,
   sectionIdValidationError,
+  validateSessionSectionCoverage,
+  validateSectionTitlesFromCsv,
+  normalizeSectionId,
   csvCellStr,
   rowHasPrimaryId,
   rowRequiresEmptySlideId,
   isSlideOrMediaId,
   clearSlideIdForMediaRow,
+  validatePracticeQuestionTypesFromRows,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -54,6 +60,17 @@ export class PipelineAbortError extends Error {
     super(message);
     this.name = 'PipelineAbortError';
     this.errors = errors;
+  }
+}
+
+/** Non-fatal abort for validate-only — mirrors validation_types.ValidationAbort. */
+export class ValidationAbort extends Error {
+  constructor(message, errors = [], { filename } = {}) {
+    super(message);
+    this.name = 'ValidationAbort';
+    this.message = message;
+    this.errors = errors;
+    this.filename = filename || '';
   }
 }
 
@@ -244,6 +261,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
           const val = extractFieldValue(textBlock, 'metasession_id', slideNumber, ['metasession_id'], warn);
           if (val && !metasessionId) metasessionId = val;
         }
+        const metaErr = validatePptxSlide1MetasessionId(`Slide ${slideNumber}`, metasessionId);
+        if (metaErr) slideValidationErrors.push(metaErr);
         continue;
       }
 
@@ -271,6 +290,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       slideData.verbatim_number = verbatimNumber;
 
       if (slideNumber === 2) {
+        const tocErr = validatePptxSlide2Toc(`Slide ${slideNumber}`, combinedText);
+        if (tocErr) slideValidationErrors.push(tocErr);
         log(
           `   [Slide ${slideNumber}] TOC slide `
           + `('${slideData.slide_title || 'no slide_title tag'}') `
@@ -315,6 +336,12 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         );
         break;
       }
+    }
+
+    if (prs.slides.length < 2) {
+      slideValidationErrors.push(
+        'Slide 2 must be the Table of Contents slide; presentation has fewer than 2 slides.',
+      );
     }
 
     let thankYouFound = thankYouRawIndex !== null;
@@ -832,6 +859,8 @@ function validateCsvNewModeFromRows(rows) {
     }
   }
 
+  validationErrors.push(...validateSessionSectionCoverage(rows));
+
   return { valid: validationErrors.length === 0, errors: validationErrors };
 }
 
@@ -1041,6 +1070,18 @@ async function applyLanguageAndNumerals(vfs, csvPath, reportRow, log) {
   }
 }
 
+async function validateSectionTitlesAgainstApi(vfs, csvPath, log, config) {
+  const fetchFn = config.fetchFn || fetch;
+  const errors = await validateSectionTitlesFromCsv(vfs, csvPath, { fetchFn });
+  if (!errors.length) {
+    log('   [Section title] PPTX section_title values match QMS API');
+    return { ok: true, errors: [] };
+  }
+  log('   [FAILURE] Section title validation failed.');
+  for (const err of errors) log(`      - ${err}`);
+  return { ok: false, errors };
+}
+
 function collectSlideIdRowsFromRows(rows) {
   const rowsOut = [];
   let metasessionId = '';
@@ -1074,11 +1115,11 @@ async function collectSlideIdRowsFromCsv(vfs, csvPath, log) {
 let _abortOnError = true;
 let _skipSheets = false;
 
-function abortPipeline(log, message, errors = []) {
+function abortPipeline(log, message, errors = [], { filename } = {}) {
   log(`\n❌ ${message}`);
   for (const err of errors) log(`   - ${err}`);
   if (!_abortOnError) {
-    return;
+    throw new ValidationAbort(message, errors, { filename });
   }
   log('   Fix the issue and rerun the full pipeline (run_all.py).');
   throw new PipelineAbortError(message, errors);
@@ -1133,6 +1174,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
   const sheetsRowsToUpload = [];
 
   for (const { filename, filePath } of filesToProcess) {
+    try {
     log('\n' + '='.repeat(60));
     log(`Processing PowerPoint: ${filename}`);
     log('='.repeat(60));
@@ -1171,7 +1213,12 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       if (slideValidationErrors.length > 0) {
         log('   [FAILURE] Slide structure validation failed.');
         for (const err of slideValidationErrors) log(`     - ${err}`);
-        abortPipeline(log, `Slide structure validation failed for ${filename}`, slideValidationErrors);
+        abortPipeline(
+          log,
+          `Slide structure validation failed for ${filename}`,
+          slideValidationErrors,
+          { filename: `${metaId}_${originalBaseName}.csv` },
+        );
       }
 
       log(`-> Found metasession_id: ${metaId}`);
@@ -1197,23 +1244,67 @@ export async function runExtractCsv(ctx, pptxFilenames) {
         } catch (e) {
           log(`   Error deleting file: ${e.message}`);
         }
-        abortPipeline(log, `CSV validation failed for ${finalSaveName}`, contentErrors);
-      }
+        if (!_abortOnError) {
+          processingSummary.push({
+            filename: finalSaveName,
+            status: 'INVALID',
+            errors: contentErrors,
+          });
+        } else {
+          abortPipeline(log, `CSV validation failed for ${finalSaveName}`, contentErrors);
+        }
+      } else {
+        log('   [SUCCESS] Content validation passed.');
 
-      log('   [SUCCESS] Content validation passed.');
+        log('   Expanding question IDs from QMS metadata API...');
+        await expandQuestionIdsFromApi(vfs, saveFilepath, log, config);
 
-      log('   Expanding question IDs from QMS metadata API...');
-      await expandQuestionIdsFromApi(vfs, saveFilepath, log, config);
+        log('   Validating practice question types...');
+        const { rows: expandedRows } = await readCsvFromVfs(vfs, saveFilepath);
+        const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
+          expandedRows,
+          ctx.fetchFn || config.fetchFn,
+        );
+        if (practiceTypeErrors.length > 0) {
+          log('   [FAILURE] Practice question type validation failed.');
+          for (const err of practiceTypeErrors) log(`     - ${err}`);
+          try {
+            if (vfs.remove) await vfs.remove(saveFilepath);
+            log('   Deleted invalid file.');
+          } catch (e) {
+            log(`   Error deleting file: ${e.message}`);
+          }
+          abortPipeline(
+            log,
+            `Practice question type validation failed for ${finalSaveName}`,
+            practiceTypeErrors,
+            { filename: finalSaveName },
+          );
+        }
 
-      log('   Applying language and numerals from metasession API...');
-      await applyLanguageAndNumerals(vfs, saveFilepath, reportRow, log);
+        log('   Applying language and numerals from metasession API...');
+        await applyLanguageAndNumerals(vfs, saveFilepath, reportRow, log);
 
-      processingSummary.push({ filename: finalSaveName, status: 'VALID', errors: [] });
+        log('   Validating section titles against QMS section API...');
+        const titleCheck = await validateSectionTitlesAgainstApi(
+          vfs, saveFilepath, log, config,
+        );
+        if (!titleCheck.ok) {
+          abortPipeline(
+            log,
+            `Section title validation failed for ${finalSaveName}`,
+            titleCheck.errors,
+            { filename: finalSaveName },
+          );
+        }
 
-      const sheetRows = await collectSlideIdRowsFromCsv(vfs, saveFilepath, log);
-      if (sheetRows.length > 0) {
-        sheetsRowsToUpload.push(...sheetRows);
-        log(`   [Sheets] Queued ${sheetRows.length} slide_id row(s) for upload.`);
+        processingSummary.push({ filename: finalSaveName, status: 'VALID', errors: [] });
+
+        const sheetRows = await collectSlideIdRowsFromCsv(vfs, saveFilepath, log);
+        if (sheetRows.length > 0) {
+          sheetsRowsToUpload.push(...sheetRows);
+          log(`   [Sheets] Queued ${sheetRows.length} slide_id row(s) for upload.`);
+        }
       }
     } else {
       const result = await processPresentation(vfs, filePath, log, pptxOptions);
@@ -1289,10 +1380,33 @@ export async function runExtractCsv(ctx, pptxFilenames) {
           } catch (e) {
             log(`   Error deleting file: ${e.message}`);
           }
-          abortPipeline(log, `CSV validation failed for ${finalSaveName}`, contentErrors);
+          if (!_abortOnError) {
+            processingSummary.push({
+              filename: finalSaveName,
+              status: 'INVALID',
+              errors: contentErrors,
+            });
+          } else {
+            abortPipeline(log, `CSV validation failed for ${finalSaveName}`, contentErrors);
+          }
         }
       } else {
         abortPipeline(log, `Validation failed for ${filename}`, validationErrors);
+      }
+    }
+    } catch (e) {
+      if (e instanceof ValidationAbort && !_abortOnError) {
+        if (e.filename) {
+          processingSummary.push({
+            filename: e.filename,
+            status: 'INVALID',
+            errors: e.errors,
+          });
+        } else {
+          throw e;
+        }
+      } else {
+        throw e;
       }
     }
   }
@@ -1371,7 +1485,7 @@ export function buildCsvOutcomes(processingSummary, csvsPath) {
   for (const item of processingSummary || []) {
     const fname = String(item.filename || '');
     const base = fname.split(' (')[0].trim();
-    const mid = /^\d+/.test(base.split('_')[0]) ? base.split('_')[0] : '';
+    const mid = /^\d+$/.test(base.split('_')[0]) ? base.split('_')[0] : '';
     let csvPath = '';
     if (item.status === 'VALID' && base.endsWith('.csv')) {
       csvPath = `${csvsPath}/${base}`;
@@ -1380,7 +1494,7 @@ export function buildCsvOutcomes(processingSummary, csvsPath) {
     const metasessionErrors = errs.filter((e) => /metasession|metadata/i.test(e));
     const csvErrors = errs.filter((e) => !metasessionErrors.includes(e));
     outcomes.push({
-      csvFilename: fname,
+      csvFilename: base.endsWith('.csv') ? base : fname,
       csvPath,
       metasessionId: mid,
       csvErrors,
@@ -1404,6 +1518,17 @@ export async function validatePresentationFile(ctx, pptxFilename) {
       csvOutcomes: buildCsvOutcomes(result.processingSummary, csvsPath),
     };
   } catch (e) {
+    if (e instanceof ValidationAbort) {
+      const summary = [];
+      if (e.filename) {
+        summary.push({ filename: e.filename, status: 'INVALID', errors: e.errors });
+      } else if (e.errors.length) {
+        pptxErrors.push(...e.errors);
+      } else {
+        pptxErrors.push(e.message);
+      }
+      return { pptxErrors, csvOutcomes: buildCsvOutcomes(summary, csvsPath) };
+    }
     if (e instanceof PipelineAbortError) {
       pptxErrors.push(...(e.errors || [e.message]));
     } else {

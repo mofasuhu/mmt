@@ -225,7 +225,7 @@ export function extractInfoFromSlide(slideText, slideNumber, fieldsToExtract, al
 
   const exceptions = new Set([
     'section_title', 'section_gp', 'verbatim', 'verbatim_listening', 'verbatim_multipart',
-    'slide_title', 'section_type', ...HEADER_FIELDS,
+    'slide_title', 'section_type', 'video_title', ...HEADER_FIELDS,
   ]);
 
   for (const [key, value] of Object.entries(res)) {

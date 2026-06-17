@@ -6,6 +6,7 @@ import {
   csvCellStr,
   findCsvForMetasession,
   isTwelveDigitId,
+  languageFromCsvPath,
   loadSessionRows,
 } from '../shared/sessionCsv.js';
 import { fetchDownloadUrl } from '../shared/httpFetch.js';
@@ -45,13 +46,6 @@ function videoTitleFromRow(row) {
 function metasessionIdFromFolderName(name) {
   const match = name.match(/^(\d{12})/);
   return match ? match[1] : null;
-}
-
-function languageFromCsvPath(csvPath) {
-  const name = csvPath.split('/').pop().toLowerCase();
-  if (name.endsWith('_ar.csv')) return 'ar';
-  if (name.endsWith('_en.csv')) return 'en';
-  return 'en';
 }
 
 /**
@@ -341,10 +335,7 @@ async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onPro
   await vfs.writeBytes(fullPngPath, new Uint8Array(await fullBlob.arrayBuffer()));
   log(`Wrote ${videoId}.png (${DESIGN_SIZE.width}×${DESIGN_SIZE.height})`);
 
-  const thumbCanvas = document.createElement('canvas');
-  thumbCanvas.width = THUMB_SIZE.width;
-  thumbCanvas.height = THUMB_SIZE.height;
-  thumbCanvas.getContext('2d').drawImage(composed, 0, 0, THUMB_SIZE.width, THUMB_SIZE.height);
+  const thumbCanvas = resizeCover(composed, THUMB_SIZE.width, THUMB_SIZE.height);
   const thumbBlob = await canvasToBlob(thumbCanvas, 'image/png');
   await vfs.writeBytes(thumbPath, new Uint8Array(await thumbBlob.arrayBuffer()));
   log(`Wrote ${videoId}_thumbnail.png (${THUMB_SIZE.width}×${THUMB_SIZE.height})`);

@@ -1,7 +1,19 @@
 /**
  * Port of make_files.py — generate per-slide .tex trees under files/.
  */
-import { csvCellStr, isTwelveDigitId, loadSessionRows } from '../shared/sessionCsv.js';
+import {
+  applySlideIdMapToCsvRows,
+  collectTocEntriesFromRows,
+  csvCellStr,
+  isTwelveDigitId,
+  loadSessionRows,
+  normalizeMetasessionId,
+  patchPackageXmlSlideIds,
+  planPackageSlideIds,
+  renderTocEntriesTex,
+  rowsToCsv,
+  writeRemoteSourceSlideIdMarker,
+} from '../shared/sessionCsv.js';
 
 const ARABIC_SESSION_NUMBERS = {
   1: 'الأولى', 2: 'الثانية', 3: 'الثالثة', 4: 'الرابعة', 5: 'الخامسة',
@@ -50,6 +62,23 @@ async function loadSessionCsv(vfs, texFileIdPart) {
   } catch (e) {
     return { rows: null, path: null, error: e };
   }
+}
+
+async function fetchNewSlideId(ctx) {
+  const url = ctx.config?.newIdUrl || 'https://12digit.nagwa.com/get.bulk.codes/1/cps/cps.system/';
+  const fetchFn = ctx.config?.fetchFn || fetch;
+  try {
+    const resp = await fetchFn(url, { headers: {} });
+    const raw = (await resp.text()).trim();
+    const data = JSON.parse(raw);
+    if (Array.isArray(data) && data.length) {
+      const newId = String(data[0]).trim();
+      if (/^\d{12}$/.test(newId)) return newId;
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
 }
 
 function twelveDigitIdKey(val) {
@@ -275,6 +304,29 @@ export async function runMakeFiles(ctx) {
       log(`   └── 🚫 Excluding ${excludedFromMainTex.size} slide ids from main tex slideinput list`);
     }
 
+    let packagePlan;
+    try {
+      packagePlan = await planPackageSlideIds(slides, {
+        fetchNewId: () => fetchNewSlideId(ctx),
+      });
+    } catch (e) {
+      log(`   └── ❌ ${e.message}`);
+      continue;
+    }
+
+    const slideNumberToPackageId = Object.fromEntries(
+      packagePlan.map((entry) => [entry.slideNumber, entry.packageSlideId]),
+    );
+    const duplicateAssignments = packagePlan.filter(
+      (entry) => entry.packageSlideId !== entry.sourceSlideId,
+    );
+    if (duplicateAssignments.length) {
+      log(
+        `   └── 🔀 Assigned ${duplicateAssignments.length} unique package id(s) `
+        + 'for reused slide_id(s) in files/',
+      );
+    }
+
     const docClassMatch = /\\documentclass\[.*?\]\{nagwa\}/.exec(content);
     const headerDocClass = docClassMatch ? docClassMatch[0] : '';
 
@@ -297,11 +349,11 @@ export async function runMakeFiles(ctx) {
     try {
       const mainTexOutputPath = `${sessionFolderPath}/${filename}`;
       let mainBody = `${headerDocClass}\n\n\\begin{document}\n${headerMetadata}\n`;
-      for (const slideTuple of slides) {
-        const slideId = slideTuple[1];
-        if (isExcludedSlideId(slideId, excludedFromMainTex)) continue;
+      for (const entry of packagePlan) {
+        const { packageSlideId, slideTuple } = entry;
+        if (isExcludedSlideId(packageSlideId, excludedFromMainTex)) continue;
         const slideComment = (slideTuple[4] || '').trim();
-        mainBody += `\\slideinput{${slideId}}${slideComment ? ` ${slideComment}` : ''}\n`;
+        mainBody += `\\slideinput{${packageSlideId}}${slideComment ? ` ${slideComment}` : ''}\n`;
       }
       mainBody += '\n\\end{document}';
       await vfs.writeText(mainTexOutputPath, mainBody);
@@ -331,16 +383,43 @@ export async function runMakeFiles(ctx) {
 
     const sessionXmlPath = `${sessionFolderPath}/${baseFilename}.xml`;
     if (await vfs.exists(xmlLookupPath)) {
-      await copyFile(vfs, xmlLookupPath, sessionXmlPath);
-      log(`   └── 📄 Copied XML to ${baseFilename}.xml`);
+      let xmlText = await vfs.readText(xmlLookupPath);
+      const { xml: patchedXml, changes } = patchPackageXmlSlideIds(xmlText, slideNumberToPackageId);
+      await vfs.writeText(sessionXmlPath, patchedXml);
+      if (changes) {
+        log(`   └── 📄 Patched ${changes} slide_id(s) in package XML for duplicate slides`);
+      } else {
+        log(`   └── 📄 Copied XML to ${baseFilename}.xml`);
+      }
     } else {
       log(`   └── ⚠️ Warning: XML file not found at '${xmlLookupPath}'.`);
     }
 
     if (csvSourcePath && (await vfs.exists(csvSourcePath))) {
       const csvDestName = csvSourcePath.split('/').pop();
-      await copyFile(vfs, csvSourcePath, `${sessionFolderPath}/${csvDestName}`);
-      log(`   └── 📄 Copied CSV to ${csvDestName}`);
+      const csvDestPath = `${sessionFolderPath}/${csvDestName}`;
+      if (currentCsvRows) {
+        const packageRows = currentCsvRows.map((row) => {
+          const out = { ...row };
+          if ('metasession_id' in out) {
+            const normalized = normalizeMetasessionId(out.metasession_id);
+            if (normalized) out.metasession_id = normalized;
+          }
+          return out;
+        });
+        const changed = applySlideIdMapToCsvRows(packageRows, slideNumberToPackageId);
+        const columns = Object.keys(packageRows[0] || {});
+        const dataRows = packageRows.map((row) => columns.map((col) => row[col] ?? ''));
+        await vfs.write(csvDestPath, rowsToCsv(columns, dataRows));
+        if (changed) {
+          log(`   └── 📄 Updated ${changed} slide_id cell(s) in package CSV`);
+        } else {
+          log(`   └── 📄 Wrote package CSV: ${csvDestName}`);
+        }
+      } else {
+        await copyFile(vfs, csvSourcePath, csvDestPath);
+        log(`   └── 📄 Copied CSV to ${csvDestName}`);
+      }
     } else {
       log('   └── ⚠️ Warning: Session CSV not found for copying into files/ folder.');
     }
@@ -354,25 +433,32 @@ export async function runMakeFiles(ctx) {
     }
 
     const createdFolders = new Set();
+    const tocEntries = currentCsvRows ? collectTocEntriesFromRows(currentCsvRows) : [];
 
-    for (let i = 0; i < slides.length; i += 1) {
-      const slideTuple = slides[i];
-      const slideId = slideTuple[1];
+    for (const entry of packagePlan) {
+      const {
+        index: i,
+        packageSlideId,
+        sourceSlideId,
+        slideNumber,
+        slideTuple,
+      } = entry;
       const slideTitleRaw = slideTuple[2];
       const slideType = slideTuple[3];
       const slideComment = (slideTuple[4] || '').trim();
-      const slideFolderPath = `${sessionFolderPath}/${slideId}`;
+      const slideFolderPath = `${sessionFolderPath}/${packageSlideId}`;
 
-      if (shouldSkipSlideFolder(slideId, slideType, excludedFromMainTex)) {
+      if (shouldSkipSlideFolder(packageSlideId, slideType, excludedFromMainTex)) {
         if (await vfs.exists(slideFolderPath)) {
           await removeDirRecursive(vfs, slideFolderPath);
         }
         continue;
       }
 
-      if (!createdFolders.has(slideId)) {
-        await vfs.mkdir(slideFolderPath, { recursive: true });
-        createdFolders.add(slideId);
+      await vfs.mkdir(slideFolderPath, { recursive: true });
+      createdFolders.add(packageSlideId);
+      if (packageSlideId !== sourceSlideId) {
+        await writeRemoteSourceSlideIdMarker(vfs, slideFolderPath, sourceSlideId);
       }
 
       if (
@@ -380,15 +466,17 @@ export async function runMakeFiles(ctx) {
         currentCsvRows.some((r) => 'slide_id' in r) &&
         currentCsvRows.some((r) => 'slide_purpose' in r)
       ) {
-        const sidStr = String(slideId);
-        let row = currentCsvRows.find((r) => csvCellStr(r.slide_id) === sidStr);
+        let row = currentCsvRows.find((r) => csvCellStr(r.slide_number) === slideNumber);
+        if (!row) {
+          row = currentCsvRows.find((r) => csvCellStr(r.slide_id) === sourceSlideId);
+        }
         if (!row && currentCsvRows.some((r) => 'question_id' in r)) {
-          row = currentCsvRows.find((r) => csvCellStr(r.question_id) === sidStr);
+          row = currentCsvRows.find((r) => csvCellStr(r.question_id) === sourceSlideId);
         }
         if (row) {
           const purposeContent = csvCellStr(row.slide_purpose);
           if (purposeContent) {
-            const txtPath = `${slideFolderPath}/${slideId}_purpose.txt`;
+            const txtPath = `${slideFolderPath}/${packageSlideId}_purpose.txt`;
             try {
               await vfs.writeText(txtPath, purposeContent);
             } catch (e) {
@@ -413,7 +501,11 @@ export async function runMakeFiles(ctx) {
           `    \\SessionSubject{${subject}}`;
       } else if (i === slides.length - 1) {
         innerTexContent = `    ${THANK_YOU_MESSAGES[language] || THANK_YOU_MESSAGES.en}`;
-      } else if (slideType === 'image' || slideType === 'toc') {
+      } else if (slideType === 'toc') {
+        innerTexContent = tocEntries.length
+          ? renderTocEntriesTex(tocEntries, '    ')
+          : '    \\begin{slideToC}\n    \\end{slideToC}';
+      } else if (slideType === 'image') {
         innerTexContent = '    session';
       }
 
@@ -432,7 +524,7 @@ export async function runMakeFiles(ctx) {
         }
 
         finalTexContent += '\\end{document}';
-        await vfs.writeText(`${slideFolderPath}/${slideId}.tex`, finalTexContent);
+        await vfs.writeText(`${slideFolderPath}/${packageSlideId}.tex`, finalTexContent);
       }
     }
 

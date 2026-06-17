@@ -7,6 +7,7 @@ import {
   normalizeSectionType,
   isSectionId,
   skipSectionQuestionValidation,
+  validateSessionSectionCoverage,
 } from './sessionCsv.js';
 
 export const SECTIONS_VALIDATION_RESULTS_FILE = 'sections_validation_results.txt';
@@ -76,9 +77,19 @@ async function appendResults(vfs, resultsPath, block) {
   await vfs.writeText(resultsPath, prev + block);
 }
 
+function formatExtraApiQuestionError(sectionId, unusedQids) {
+  const maxShow = 200;
+  const shown = unusedQids.slice(0, maxShow);
+  const suffix = unusedQids.length > maxShow ? ` (and ${unusedQids.length - maxShow} more)` : '';
+  return (
+    `[section_id=${sectionId}] ${unusedQids.length} question_id(s) in section API `
+    + `but not used in this session: ${JSON.stringify(shown)}${suffix}`
+  );
+}
+
 export async function initSectionsValidationResults(vfs) {
   const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: every CSV question_id must appear in section API question_ids (the API may list extra questions not used in this session).\nsection_type=revision: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
+  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: every CSV question_id must appear in section API question_ids, and every section API question_id must appear in the CSV.\nsection_type=revision: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
   await vfs.writeText(SECTIONS_VALIDATION_RESULTS_FILE, text);
 }
 
@@ -141,6 +152,7 @@ export async function validateSectionAgainstMetasession(
   } = {},
 ) {
   const errors = [];
+  const warnings = [];
   let sectionFetchOk = true;
   let metasessionFetchOk = true;
 
@@ -192,6 +204,9 @@ export async function validateSectionAgainstMetasession(
         `[section_id=${sectionId}] ${missingQids.length} question_id(s) used in processing but NOT in section.question_ids: ${JSON.stringify(missingQids)}`,
       );
     }
+    if (unusedInCsv.length) {
+      errors.push(formatExtraApiQuestionError(sectionId, unusedInCsv));
+    }
   }
 
   if (vfs) {
@@ -219,16 +234,17 @@ export async function validateSectionAgainstMetasession(
         block += '  Question-id cross-check SKIPPED (section_type=revision).\n\n';
       } else {
         if (questionIdsNote) block += `  ${questionIdsNote}\n`;
-        block += `  CSV must be a subset of section API (section_type=${normalizedSectionType}); extra API question_ids are allowed.\n`;
+        block += `  CSV and section API question_ids must match exactly (section_type=${normalizedSectionType}); unused API ids fail validation.\n`;
         block += `  Unique question_id(s) checked for this section: ${usedUnique.length}\n`;
         block += `  question_ids returned by section API: ${apiQuestionIds.size}\n`;
         block += `  Used in CSV and listed in section API (matched): ${matchedQids.length}\n`;
         block += `  Used in CSV but NOT in section API (missing, fails validation): ${missingQids.length}\n`;
-        block += `  In section API but not used in this CSV (informational only): ${unusedInCsv.length}\n\n`;
+        block += `  In section API but not used in this CSV (fails validation): ${unusedInCsv.length}\n\n`;
       }
-      if (errors.length) {
+      if (errors.length || warnings.length) {
         block += '--- Issues ---\n';
         for (const err of errors) block += `  ${err}\n`;
+        for (const warn of warnings) block += `  WARNING: ${warn}\n`;
         block += '\n';
       }
     } else {
@@ -245,7 +261,7 @@ export async function validateSectionAgainstMetasession(
     await vfs.writeText('full_log.txt', logText + chunk);
   }
 
-  return errors;
+  return { errors, warnings };
 }
 
 export async function validateSectionsInCsv(
@@ -260,33 +276,59 @@ export async function validateSectionsInCsv(
     writeReports = true,
   } = {},
 ) {
-  if (!metasessionId) return [];
+  if (!metasessionId) return { errors: [], warnings: [] };
 
   const vfs = ctx.vfs || ctx;
   const fetchImpl = fetchFn || ctx.config?.fetchFn || fetch;
   const logFn = log || ctx.log || console.log;
 
   const rows = await loadSessionRows(vfs, csvPath);
-  let sectionMap = await collectSectionQuestionMapFromRows(rows);
-  if (!Object.keys(sectionMap).length) {
+  const coverageErrors = validateSessionSectionCoverage(rows);
+  if (coverageErrors.length) {
     if (writeReports) {
       const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-      await appendResults(
-        vfs,
-        SECTIONS_VALIDATION_RESULTS_FILE,
-        `${'-'.repeat(80)}\nChecked at: ${stamp}\nCSV file: ${csvPath.split('/').pop()}\nMetasession ID: ${metasessionId}\nResult: No section_id values found in this CSV — nothing to validate.\n\n`,
-      );
+      const body = [
+        `${'-'.repeat(80)}`,
+        `Checked at: ${stamp}`,
+        `CSV file: ${csvPath.split('/').pop()}`,
+        `Metasession ID: ${metasessionId}`,
+        'Result: FAILED — session section coverage',
+        ...coverageErrors.map((err) => `  - ${err}`),
+        '',
+      ].join('\n');
+      await appendResults(vfs, SECTIONS_VALIDATION_RESULTS_FILE, `${body}\n`);
     }
-    return [];
+    return { errors: coverageErrors, warnings: [] };
   }
 
+  const { validateSectionTitlesFromCsv } = await import('./sessionCsv.js');
+  const titleErrors = await validateSectionTitlesFromCsv(vfs, csvPath, { fetchFn: fetchImpl });
+  if (titleErrors.length) {
+    if (writeReports) {
+      const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      const body = [
+        `${'-'.repeat(80)}`,
+        `Checked at: ${stamp}`,
+        `CSV file: ${csvPath.split('/').pop()}`,
+        `Metasession ID: ${metasessionId}`,
+        'Result: FAILED — section_title vs API mismatch',
+        ...titleErrors.map((err) => `  - ${err}`),
+        '',
+      ].join('\n');
+      await appendResults(vfs, SECTIONS_VALIDATION_RESULTS_FILE, `${body}\n`);
+    }
+    return { errors: titleErrors, warnings: [] };
+  }
+
+  let sectionMap = await collectSectionQuestionMapFromRows(rows);
   sectionMap = applyQuestionIdTransform(sectionMap, questionIdTransform);
   const sectionTypes = collectSectionTypesFromRows(rows);
   const metasessionData = await getRawMetasessionData(metasessionId, { fatal: false, log: logFn });
   const allErrors = [];
+  const allWarnings = [];
   for (const [sectionId, qids] of Object.entries(sectionMap)) {
     if (!sectionId) continue;
-    const errs = await validateSectionAgainstMetasession(sectionId, metasessionId, qids, {
+    const { errors: errs, warnings: warns } = await validateSectionAgainstMetasession(sectionId, metasessionId, qids, {
       vfs: writeReports ? vfs : null,
       metasessionData,
       csvBasename: csvPath.split('/').pop(),
@@ -296,6 +338,7 @@ export async function validateSectionsInCsv(
       log: logFn,
     });
     allErrors.push(...errs);
+    allWarnings.push(...warns);
   }
-  return allErrors;
+  return { errors: allErrors, warnings: allWarnings };
 }

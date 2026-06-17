@@ -2,13 +2,42 @@
  * File System Access API helpers for reading/writing local directories.
  */
 
+const WINDOWS_RESERVED_NAMES = new Set([
+  'con', 'prn', 'aux', 'nul',
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`),
+]);
+
+/**
+ * Make a single path segment safe for getFileHandle / getDirectoryHandle on all OSes.
+ * Bilingual merged PPTX names use ``|`` in-memory; on disk we use `` __ ``.
+ * @param {string} name
+ * @returns {string}
+ */
+export function sanitizePathSegmentForFileSystem(name) {
+  let s = String(name ?? '').replace(/[\x00-\x1f\x7f]/g, '');
+  s = s.replace(/\s*\|\s*/g, ' __ ');
+  s = s.replace(/[<>:"/\\|?*]/g, '_');
+  s = s.replace(/\s+/g, ' ').trim();
+  s = s.replace(/[. ]+$/g, '');
+  if (!s || s === '.' || s === '..') return '_';
+  if (WINDOWS_RESERVED_NAMES.has(s.toLowerCase())) s = `_${s}`;
+  if (s.length > 240) s = s.slice(0, 240);
+  return s;
+}
+
 function normalizePath(p) {
   return String(p).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '').replace(/\/$/, '');
 }
 
+function sanitizeRelativePath(relPath) {
+  const parts = normalizePath(relPath).split('/').filter(Boolean);
+  return parts.map(sanitizePathSegmentForFileSystem).join('/');
+}
+
 async function getDirHandle(root, relPath, { create = false } = {}) {
   if (!relPath) return root;
-  const parts = normalizePath(relPath).split('/').filter(Boolean);
+  const parts = sanitizeRelativePath(relPath).split('/').filter(Boolean);
   let cur = root;
   for (const part of parts) {
     cur = await cur.getDirectoryHandle(part, { create });
@@ -17,7 +46,7 @@ async function getDirHandle(root, relPath, { create = false } = {}) {
 }
 
 async function getFileHandle(root, relPath, { create = false } = {}) {
-  const n = normalizePath(relPath);
+  const n = sanitizeRelativePath(relPath);
   const slash = n.lastIndexOf('/');
   const dir = slash >= 0 ? n.slice(0, slash) : '';
   const name = slash >= 0 ? n.slice(slash + 1) : n;
@@ -37,7 +66,7 @@ export class MountedDir {
 
   async exists(relPath) {
     try {
-      const n = normalizePath(relPath);
+      const n = sanitizeRelativePath(relPath);
       if (!n) return true;
       const slash = n.lastIndexOf('/');
       const dir = slash >= 0 ? n.slice(0, slash) : '';
@@ -57,7 +86,7 @@ export class MountedDir {
 
   async isFile(relPath) {
     try {
-      const n = normalizePath(relPath);
+      const n = sanitizeRelativePath(relPath);
       const slash = n.lastIndexOf('/');
       const dir = slash >= 0 ? n.slice(0, slash) : '';
       const name = slash >= 0 ? n.slice(slash + 1) : n;
@@ -71,7 +100,7 @@ export class MountedDir {
 
   async isDir(relPath) {
     try {
-      const n = normalizePath(relPath);
+      const n = sanitizeRelativePath(relPath);
       if (!n) return true;
       const slash = n.lastIndexOf('/');
       const dir = slash >= 0 ? n.slice(0, slash) : '';
@@ -85,24 +114,24 @@ export class MountedDir {
   }
 
   async mkdir(relPath, { recursive = false } = {}) {
-    await getDirHandle(this.handle, normalizePath(relPath), { create: recursive || true });
+    await getDirHandle(this.handle, relPath, { create: recursive || true });
   }
 
   async readBytes(relPath) {
-    const fh = await getFileHandle(this.handle, normalizePath(relPath));
+    const fh = await getFileHandle(this.handle, relPath);
     const file = await fh.getFile();
     return new Uint8Array(await file.arrayBuffer());
   }
 
   async writeBytes(relPath, bytes) {
-    const fh = await getFileHandle(this.handle, normalizePath(relPath), { create: true });
+    const fh = await getFileHandle(this.handle, relPath, { create: true });
     const w = await fh.createWritable();
     await w.write(bytes);
     await w.close();
   }
 
   async remove(relPath, { recursive = false } = {}) {
-    const n = normalizePath(relPath);
+    const n = sanitizeRelativePath(relPath);
     const slash = n.lastIndexOf('/');
     const parentPath = slash >= 0 ? n.slice(0, slash) : '';
     const name = slash >= 0 ? n.slice(slash + 1) : n;
@@ -117,7 +146,7 @@ export class MountedDir {
   }
 
   async listDir(relPath = '') {
-    const dir = await getDirHandle(this.handle, normalizePath(relPath));
+    const dir = await getDirHandle(this.handle, relPath);
     const names = [];
     // eslint-disable-next-line no-restricted-syntax
     for await (const [name] of dir.entries()) {
@@ -399,8 +428,9 @@ export async function flushVirtualFsToDirectory(vfs, dirHandle, { onProgress } =
   for (const path of paths) {
     if (path.endsWith('/.keep')) continue;
     const data = await vfs.readBytes(path);
-    await mount.writeBytes(path, data);
+    const diskPath = sanitizeRelativePath(path);
+    await mount.writeBytes(diskPath, data);
     i += 1;
-    if (onProgress) onProgress(i, paths.length, path);
+    if (onProgress) onProgress(i, paths.length, diskPath, path);
   }
 }

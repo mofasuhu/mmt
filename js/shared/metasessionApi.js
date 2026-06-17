@@ -1,5 +1,7 @@
 /** Metasession API client — port of metasession_api.py */
 
+import { normalizeMetasessionId } from './sessionCsv.js';
+
 const API_URL = 'https://admin.classes.nagwa.com/api/v1/metasessions/{metasession_id}/';
 const API_KEY = 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc';
 const MAX_RETRIES = 3;
@@ -77,10 +79,25 @@ const ARABIC_SESSION_NUMBER_MAP = {
   'الحصة الرابعة والستون': 64,
 };
 
+/**
+ * Split on the first ASCII or fullwidth colon only (matches Python re.split maxsplit=1).
+ * JS String.split(/regex/, limit) is not equivalent — limit caps result length, not split count.
+ * @param {string} text
+ * @returns {{ before: string, after: string } | null}
+ */
+function splitOnceOnColon(text) {
+  const idx = text.search(/[:：]/);
+  if (idx < 0) return null;
+  return {
+    before: text.slice(0, idx).trim(),
+    after: text.slice(idx + 1).trim(),
+  };
+}
+
 export function stripSessionPrefix(metasessionTitle) {
   if (!metasessionTitle) return metasessionTitle;
-  const parts = metasessionTitle.split(/[:：]/, 2);
-  if (parts.length === 2) return parts[1].trim();
+  const parts = splitOnceOnColon(metasessionTitle);
+  if (parts) return parts.after;
   return metasessionTitle.trim();
 }
 
@@ -90,7 +107,8 @@ export function stripSessionPrefix(metasessionTitle) {
  */
 export function computeMetasessionNumber(metasessionTitle) {
   if (!metasessionTitle) return null;
-  const prefix = metasessionTitle.split(/[:：]/, 1)[0].trim();
+  const parts = splitOnceOnColon(metasessionTitle);
+  const prefix = parts ? parts.before : metasessionTitle.trim();
   if (prefix in ARABIC_SESSION_NUMBER_MAP) {
     return String(ARABIC_SESSION_NUMBER_MAP[prefix]);
   }
@@ -115,7 +133,9 @@ function sleep(sec) {
 
 async function fetchMetasessionData(metasessionId, log = console.log, fetchFn = null) {
   const fetchImpl = fetchFn || _fetchFn || fetch;
-  if (!metasessionId) return null;
+  const normalizedId = normalizeMetasessionId(metasessionId);
+  if (!normalizedId) return null;
+  metasessionId = normalizedId;
 
   const url = API_URL.replace('{metasession_id}', metasessionId);
   let lastError = null;
@@ -216,7 +236,15 @@ export function buildReportRow(apiData, { extended = false, metasessionId = '' }
 }
 
 export async function getRawMetasessionData(metasessionId, { fatal = true, log = console.log, fetchFn = null } = {}) {
-  if (!metasessionId) return null;
+  const normalizedId = normalizeMetasessionId(metasessionId);
+  if (!normalizedId) {
+    if (fatal) {
+      log(`   [FATAL] Invalid metasession ID: ${metasessionId}`);
+      throw new Error(`Invalid metasession ID: ${metasessionId}`);
+    }
+    return null;
+  }
+  metasessionId = normalizedId;
 
   if (_rawCache.has(metasessionId)) {
     return _rawCache.get(metasessionId);

@@ -52,6 +52,13 @@ export async function loadPlayIcon(source) {
  * @param {number} targetH
  * @returns {HTMLCanvasElement}
  */
+function applyHighQualitySmoothing(ctx) {
+  ctx.imageSmoothingEnabled = true;
+  if ('imageSmoothingQuality' in ctx) {
+    ctx.imageSmoothingQuality = 'high';
+  }
+}
+
 export function resizeCover(img, targetW, targetH) {
   const srcW = img.width ?? /** @type {HTMLImageElement} */ (img).naturalWidth;
   const srcH = img.height ?? /** @type {HTMLImageElement} */ (img).naturalHeight;
@@ -63,6 +70,7 @@ export function resizeCover(img, targetW, targetH) {
   scratch.width = newW;
   scratch.height = newH;
   const sctx = scratch.getContext('2d');
+  applyHighQualitySmoothing(sctx);
   sctx.drawImage(img, 0, 0, newW, newH);
 
   const left = Math.floor((newW - targetW) / 2);
@@ -72,8 +80,36 @@ export function resizeCover(img, targetW, targetH) {
   out.width = targetW;
   out.height = targetH;
   const octx = out.getContext('2d');
+  applyHighQualitySmoothing(octx);
   octx.drawImage(scratch, left, top, targetW, targetH, 0, 0, targetW, targetH);
   return out;
+}
+
+function configureTitleTextCtx(ctx, lang) {
+  ctx.direction = 'ltr';
+  ctx.lang = lang === 'ar' ? 'ar' : 'en';
+}
+
+/**
+ * RTL isolate + LTR isolates around Latin tokens (mixed AR/EN video titles).
+ * @param {string} line
+ * @param {string} lang
+ * @returns {string}
+ */
+export function prepareVideoTitleLine(line, lang) {
+  if (lang !== 'ar' || !line) return line;
+  const isolated = line.replace(/([A-Za-z][A-Za-z0-9._-]*)/g, '\u2066$1\u2069');
+  return `\u2067${isolated}\u2069`;
+}
+
+/**
+ * @param {string} lang
+ * @returns {CanvasRenderingContext2D}
+ */
+function makeTitleMeasureCtx(lang) {
+  const ctx = document.createElement('canvas').getContext('2d');
+  configureTitleTextCtx(ctx, lang);
+  return ctx;
 }
 
 /**
@@ -101,17 +137,18 @@ function measureText(ctx, text, font) {
  * @param {number} [maxLines]
  * @returns {string[]}
  */
-export function wrapTitleLines(title, font, maxInnerWidth, maxLines = 2) {
+export function wrapTitleLines(title, font, maxInnerWidth, maxLines = 2, lang = 'en') {
   const words = title.split(/\s+/).filter(Boolean);
   if (!words.length) return [];
 
-  const probe = document.createElement('canvas').getContext('2d');
+  const probe = makeTitleMeasureCtx(lang);
   const lines = [];
   let current = [];
 
   for (const word of words) {
     const trial = current.length ? `${current.join(' ')} ${word}` : word;
-    const { width } = measureText(probe, trial, font);
+    const measureLine = prepareVideoTitleLine(trial, lang);
+    const { width } = measureText(probe, measureLine, font);
     if (width <= maxInnerWidth) {
       current.push(word);
     } else {
@@ -203,12 +240,17 @@ export function drawTitleBox(ctx, title, lang, font) {
     ctx.canvas.width - 2 * edge - 2 * TEXT_PAD_X,
     TITLE_BOX_MAX_WIDTH - 2 * TEXT_PAD_X,
   );
-  const lines = wrapTitleLines(title, font, maxInnerW, 2);
+  const lines = wrapTitleLines(title, font, maxInnerW, 2, lang);
   if (!lines.length) return;
 
+  configureTitleTextCtx(ctx, lang);
+  ctx.font = font;
+  ctx.fillStyle = TEXT_COLOR;
+
   const lineMetrics = lines.map((line) => {
-    const m = measureText(ctx, line, font);
-    return { line, ...m };
+    const drawLine = prepareVideoTitleLine(line, lang);
+    const m = measureText(ctx, drawLine, font);
+    return { line: drawLine, ...m };
   });
 
   const lineGap = lang === 'ar' ? TITLE_LINE_GAP_AR : TITLE_LINE_GAP_EN;
@@ -239,13 +281,16 @@ export function drawTitleBox(ctx, title, lang, font) {
 
   ctx.font = font;
   ctx.fillStyle = TEXT_COLOR;
+  configureTitleTextCtx(ctx, lang);
   let yCursor = y1 + (boxH - textBlockH) / 2;
 
   for (const m of lineMetrics) {
     let x;
     if (lang === 'ar') {
-      x = x2 - TEXT_PAD_X - m.width;
+      ctx.textAlign = 'right';
+      x = x2 - TEXT_PAD_X;
     } else {
+      ctx.textAlign = 'left';
       x = x1 + TEXT_PAD_X;
     }
     ctx.fillText(m.line, x, yCursor + m.ascent);
@@ -370,7 +415,7 @@ export function jpegToPdf(jpegBytes, pageW = PDF_PAGE_PT.width, pageH = PDF_PAGE
  * @param {HTMLCanvasElement} canvas
  * @returns {Promise<Uint8Array>}
  */
-export async function canvasToJpegBytes(canvas, quality = 0.92) {
+export async function canvasToJpegBytes(canvas, quality = 0.98) {
   const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
   const buf = await blob.arrayBuffer();
   return new Uint8Array(buf);
@@ -387,6 +432,7 @@ export async function canvasToPdfBytes(canvas, pageW = PDF_PAGE_PT.width, pageH 
   pdfCanvas.width = pageW;
   pdfCanvas.height = pageH;
   const ctx = pdfCanvas.getContext('2d');
+  applyHighQualitySmoothing(ctx);
   ctx.drawImage(canvas, 0, 0, pageW, pageH);
   const jpeg = await canvasToJpegBytes(pdfCanvas);
   return jpegToPdf(jpeg, pageW, pageH);

@@ -372,7 +372,7 @@ function checkMissingQuestionsInCsv(rows, log = () => {}) {
 
 /**
  * Run step-3 validation for one CSV without building XML.
- * @returns {Promise<{ sectionErrors: string[], missingQuestionErrors: string[], metasessionId: string }>}
+ * @returns {Promise<{ sectionErrors: string[], sectionWarnings: string[], missingQuestionErrors: string[], metasessionId: string }>}
  */
 export function resetXmlBuilderCaches() {
   questionMetadataCache.clear();
@@ -400,6 +400,7 @@ export async function validateSessionCsv(
   } catch (e) {
     return {
       sectionErrors: [`Could not extract metasession ID from '${filename}': ${e.message || e}`],
+      sectionWarnings: [],
       missingQuestionErrors: [],
       metasessionId: '',
     };
@@ -411,6 +412,7 @@ export async function validateSessionCsv(
   } catch (e) {
     return {
       sectionErrors: [`Could not read CSV '${filename}': ${e.message || e}`],
+      sectionWarnings: [],
       missingQuestionErrors: [],
       metasessionId,
     };
@@ -429,6 +431,7 @@ export async function validateSessionCsv(
     if (!apiData) {
       return {
         sectionErrors: [`Could not fetch metasession data for '${metasessionId}' from API.`],
+        sectionWarnings: [],
         missingQuestionErrors: [],
         metasessionId,
       };
@@ -451,7 +454,7 @@ export async function validateSessionCsv(
     ? 'IDs compared after xml_builder translation (section API uses translated question_ids).'
     : 'IDs compared from CSV (no question-id translation for this subject).';
 
-  const sectionErrors = await validateSectionsInCsv(ctx, sessionCsvPath, metasessionId, {
+  const { errors: sectionErrors, warnings: sectionWarnings } = await validateSectionsInCsv(ctx, sessionCsvPath, metasessionId, {
     questionIdTransform: (q) => translateQuestionId(q, sessionSubject, log),
     questionIdsNote: idsNote,
     writeReports,
@@ -459,7 +462,7 @@ export async function validateSessionCsv(
 
   const missingQuestionErrors = checkMissingQuestionsInCsv(sessionRows, log);
 
-  return { sectionErrors, missingQuestionErrors, metasessionId };
+  return { sectionErrors, sectionWarnings, missingQuestionErrors, metasessionId };
 }
 
 function getQuestionType(qId, missingQuestionsList, log) {
@@ -612,7 +615,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     if (
       stripped === 'thank you!' ||
       stripped === 'شكرا جزيلا' ||
-      ['Thank You!', 'thank you!', 'Thank you!', 'شكرًا جزيلًا'].includes(lastTitle)
+      ['Thank You!', 'thank you!', 'Thank you!', 'شكرًا جزيلًا', 'شكرًا جزيلًا!'].includes(lastTitle)
     ) {
       hasThankYou = true;
       remaining = remaining.slice(0, -1);
@@ -1113,10 +1116,17 @@ export async function runXmlBuilder(ctx) {
       ? 'IDs compared after xml_builder translation (section API uses translated question_ids).'
       : 'IDs compared from CSV (no question-id translation for this subject).';
 
-    const secErrors = await validateSectionsInCsv(ctx, sessionCsvPath, metasessionId, {
+    const { errors: secErrors, warnings: secWarnings } = await validateSectionsInCsv(ctx, sessionCsvPath, metasessionId, {
       questionIdTransform: (q) => translateQuestionId(q, sessionSubject, log),
       questionIdsNote: idsNote,
     });
+
+    if (secWarnings.length) {
+      log(
+        `Section validation reported ${secWarnings.length} warning(s) for ${filename}; see ${SECTIONS_VALIDATION_RESULTS_FILE}`,
+      );
+      for (const warn of secWarnings) log(`  - WARNING: ${warn}`);
+    }
 
     if (secErrors.length) {
       log(

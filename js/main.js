@@ -12,6 +12,8 @@ import {
   fileFromDrop,
   setupDropZone,
 } from './io/fsAccess.js';
+import { ServerMountedDir } from './io/serverMountedDir.js';
+import { CLS_SOURCE_PATH, REMOTE_BASE_PATH } from './shared/archivePaths.js';
 import { downloadVfsAsZip } from './io/zipExport.js';
 import { runPipeline, PIPELINE_STEP_LABELS, LAST_PIPELINE_STEP } from './pipeline/runAll.js';
 import {
@@ -113,7 +115,7 @@ function buildCtx() {
       filesDir: 'files',
       clsDir: 'CLS',
       sheetId: '1Qc9LrE54LyDzAB1sAyK6iBJDJUbT1Y3sh9-7MNSm85M',
-      sheetRange: 'Sheet1!A:C',
+      sheetRange: 'Original_Slide_ID-New_Slide_ID!A:C',
       tempSheetRange: 'temp!A:B',
       newIdUrl: 'https://12digit.nagwa.com/get.bulk.codes/1/cps/cps.system/',
       playIconPath: 'assets/video_play_icon.png',
@@ -234,6 +236,52 @@ async function useSlidesUrl() {
   log('Created links.csv from pasted Google Slides URL.');
 }
 
+function isDevServerHost() {
+  return (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
+    && window.location.port === '8788';
+}
+
+async function mountStaticArchivesIfAvailable() {
+  if (!isDevServerHost()) return false;
+
+  try {
+    const res = await fetch('/fs/status');
+    if (!res.ok) return false;
+    const { mounts } = await res.json();
+    if (!mounts?.cls?.ok) {
+      log(`CLS archive not found at ${CLS_SOURCE_PATH}`);
+      return false;
+    }
+    if (!mounts?.slides?.ok) {
+      log(`Slides archive not found at ${REMOTE_BASE_PATH}`);
+      return false;
+    }
+
+    clsArchiveHandle = new ServerMountedDir('cls', CLS_SOURCE_PATH);
+    slidesArchiveHandle = new ServerMountedDir('slides', REMOTE_BASE_PATH);
+    mountArchives();
+    setFolderLabel('#cls-folder-name', clsArchiveHandle);
+    setFolderLabel('#slides-folder-name', slidesArchiveHandle);
+
+    const clsRow = $('#cls-folder-row');
+    const slidesRow = $('#slides-folder-row');
+    if (clsRow) clsRow.hidden = true;
+    if (slidesRow) slidesRow.hidden = true;
+
+    const hint = document.querySelector('.folder-hint');
+    if (hint) {
+      hint.textContent = 'Output folder: drag or Browse. CLS and slides archives load automatically from configured local paths.';
+    }
+
+    log(`CLS archive: ${CLS_SOURCE_PATH}`);
+    log(`Slides archive: ${REMOTE_BASE_PATH}`);
+    return true;
+  } catch (e) {
+    log(`Static archive mount failed: ${e.message}`);
+    return false;
+  }
+}
+
 function mountArchives() {
   vfs.unmount('mount/cls');
   vfs.unmount('mount/slides');
@@ -342,8 +390,9 @@ async function writeToFolder() {
   await emptyDirectory(outputDirHandle);
   log('Writing files to output folder...');
   await flushVirtualFsToDirectory(vfs, outputDirHandle.handle, {
-    onProgress: (i, total, path) => {
-      if (i % 10 === 0 || i === total) log(`  ${i}/${total}: ${path}`);
+    onProgress: (i, total, diskPath, vfsPath) => {
+      const label = vfsPath && vfsPath !== diskPath ? `${diskPath} (from ${vfsPath})` : diskPath;
+      if (i % 10 === 0 || i === total) log(`  ${i}/${total}: ${label}`);
     },
   });
   log('Done writing to output folder.');
@@ -537,7 +586,10 @@ function initUi() {
   $('#pick-slides').addEventListener('click', () => pickSlidesArchive().catch((e) => log(e.message)));
   $('#run-btn').addEventListener('click', runAll);
   $('#validate-only-btn').addEventListener('click', () => runValidateOnlyMode().catch((e) => log(e.message)));
-  $('#write-folder').addEventListener('click', () => writeToFolder().catch((e) => log(e.message)));
+  $('#write-folder').addEventListener('click', () => writeToFolder().catch((e) => {
+    log(e.message || String(e));
+    if (e.name) log(`  (${e.name})`);
+  }));
   $('#download-zip').addEventListener('click', () => downloadZip().catch((e) => log(e.message)));
   $('#download-log').addEventListener('click', async () => {
     try {
@@ -557,12 +609,11 @@ function initUi() {
 
 async function probeApisOnLoad() {
   const proxy = getProxyUrl();
-  const onDevServer = typeof window !== 'undefined' && window.location?.pathname !== undefined
-    && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
-    && window.location.port === '8788';
+  const onDevServer = isDevServerHost();
 
   if (onDevServer) {
     log('Dev server detected — Nagwa APIs fall back to /proxy if direct fetch fails.');
+    await mountStaticArchivesIfAvailable();
   } else if (isGitHubPagesHost()) {
     log('Published mode — sign in with Google, paste a Slides URL, pick folders, then run pipeline.');
     if (proxy) {

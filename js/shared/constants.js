@@ -1,5 +1,16 @@
 /** Shared constants ported from extract_csv.py */
 
+import subjectsRequiringTranslationConfig from '../../config/SUBJECTS_REQUIRING_TRANSLATION.json' with { type: 'json' };
+
+function parseSubjectsRequiringTranslation(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.subjects)) return data.subjects;
+  throw new Error(
+    'standalone_html-css-js_mmt_1/config/SUBJECTS_REQUIRING_TRANSLATION.json must be a JSON array '
+    + 'or an object with a "subjects" array.',
+  );
+}
+
 export const QUESTIONS_METADATA_API_URL = 'https://qms-api.nagwa.com/v1/questions/metadata';
 export const QUESTIONS_METADATA_API_MAX_RETRIES = 3;
 export const QUESTIONS_METADATA_API_RETRY_DELAY_SEC = 2;
@@ -34,7 +45,7 @@ export const VALID_QUESTION_ROLES = [
 ];
 
 export const THANK_YOU_PATTERNS = [
-  'thank you', 'شكرًا جزيلًا', 'شكرا جزيلًا', 'شكرًا جزيلا', 'شكرا جزيلا',
+  'thank you', 'شكرًا جزيلًا', 'شكرا جزيلًا', 'شكرًا جزيلا', 'شكرا جزيلا', 'شكرًا جزيلًا!',
 ];
 
 export const THANK_YOU_STANDARDIZED = {
@@ -53,10 +64,12 @@ export const REQUIRED_SECTION_TITLES_FOR_QID = [
 /** xml_builder.py configuration */
 export const ID_URL = 'https://12digit.nagwa.com/get.bulk.codes/1/cps/cps.system/';
 
-export const SUBJECTS_REQUIRING_TRANSLATION = new Set([
-  'الأحياء', 'اكتشف', 'العلوم', 'العلوم المتكاملة', 'الرياضيات',
-  'الرياضيات • القسم الأدبي', 'الإحصاء', 'الكيمياء', 'الفيزياء',
-]);
+/** Loaded from this web tool's config/SUBJECTS_REQUIRING_TRANSLATION.json */
+export const SUBJECTS_REQUIRING_TRANSLATION = new Set(
+  parseSubjectsRequiringTranslation(subjectsRequiringTranslationConfig)
+    .map((subject) => String(subject).trim())
+    .filter(Boolean),
+);
 
 export const QMS_QUESTION_TRANSLATION_URL = 'https://qms-api.nagwa.com/v1/questions/translations';
 export const QMS_QUESTION_TRANSLATION_LANGUAGE = 'ar';

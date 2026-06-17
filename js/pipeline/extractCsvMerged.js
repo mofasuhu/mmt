@@ -13,10 +13,15 @@ import {
 } from '../shared/constants.js';
 import {
   tocTitleForLanguage,
+  validatePptxSlide1MergedMetasessionIds,
+  validatePptxSlide2Toc,
   isTwelveDigitId,
   isSectionId,
   isRecapTitle,
   sectionIdValidationError,
+  validateSessionSectionCoverage,
+  validateSectionTitlesFromCsv,
+  normalizeSectionId,
   splitMergedPptxBasename,
   csvCellStr,
   rowHasPrimaryId,
@@ -25,11 +30,12 @@ import {
   clearSlideIdForMediaRow,
   parseCsvText,
   rowsToCsv,
+  validatePracticeQuestionTypesFromRows,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
 import { getNumeralConvention, collectSlideTexts, stripExclamationMarks } from '../pptx/tagParser.js';
-import { buildCsvOutcomes } from './extractCsv.js';
+import { buildCsvOutcomes, ValidationAbort } from './extractCsv.js';
 
 const QUESTION_ID_PATTERN = /^\d{12}(\.\d+)?$/;
 const ARABIC_RE = /[\u0600-\u06FF]/;
@@ -580,7 +586,19 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       slideData.ar_slide_purpose = arPurpose;
       slideData.slide_number = slideNumber;
 
+      if (slideNumber === 1) {
+        for (const metaErr of validatePptxSlide1MergedMetasessionIds(
+          `Slide ${slideNumber}`,
+          slideData.ar_metasession_id,
+          slideData.en_metasession_id,
+        )) {
+          validationErrorsBySlide.push([slideNumber, metaErr]);
+        }
+      }
+
       if (slideNumber === 2) {
+        const tocErr = validatePptxSlide2Toc(`Slide ${slideNumber}`, fullSlideText);
+        if (tocErr) validationErrorsBySlide.push([slideNumber, tocErr]);
         log(
           `   [Slide ${slideNumber}] TOC slide `
           + `(${slideData.ar_slide_title || slideData.en_slide_title || 'no slide_title tag'}) `
@@ -596,6 +614,13 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         thankYouPptSlideNumber = slideNumber;
         log(`   Found 'Thank You' slide at slide ${slideNumber}. Slides after this will be ignored.`);
       }
+    }
+
+    if (prs.slides.length < 2) {
+      validationErrorsBySlide.push([
+        2,
+        'Slide 2 must be the Table of Contents slide; presentation has fewer than 2 slides.',
+      ]);
     }
 
     let thankYouFound = thankYouRawIndex !== null;
@@ -941,6 +966,8 @@ function validateCsvNewModeFromRows(rows) {
       validationErrors.push(`Duplicate question_id '${qid}' found on rows: ${slideNums.join(', ')}.`);
     }
   }
+
+  validationErrors.push(...validateSessionSectionCoverage(rows));
 
   return { valid: validationErrors.length === 0, errors: validationErrors };
 }
@@ -1289,11 +1316,11 @@ function buildLegacyLangRows(slides, lang) {
 let _abortOnError = true;
 let _skipSheets = false;
 
-function abortPipeline(log, message, errors = []) {
+function abortPipeline(log, message, errors = [], { filename } = {}) {
   log(`\n❌ ${message}`);
   for (const err of errors) log(`   - ${err}`);
   if (!_abortOnError) {
-    return;
+    throw new ValidationAbort(message, errors, { filename });
   }
   log('   Fix the issue and rerun the full pipeline (run_all.py).');
   throw new PipelineAbortError(message, errors);
@@ -1319,6 +1346,18 @@ async function processAndValidateCsv(vfs, rows, columns, csvPath, log) {
   return { status: 'FAILED', errors };
 }
 
+async function validateSectionTitlesAgainstApi(vfs, csvPath, log, config) {
+  const fetchFn = config.fetchFn || fetch;
+  const errors = await validateSectionTitlesFromCsv(vfs, csvPath, { fetchFn });
+  if (!errors.length) {
+    log('   [Section title] PPTX section_title values match QMS API');
+    return { ok: true, errors: [] };
+  }
+  log('   [FAILURE] Section title validation failed.');
+  for (const err of errors) log(`      - ${err}`);
+  return { ok: false, errors };
+}
+
 async function processAndValidateCsvNewMode(
   vfs, rows, columns, csvPath, metasessionId, sessionReportMap, log, config,
 ) {
@@ -1328,21 +1367,38 @@ async function processAndValidateCsvNewMode(
   await applyQuestionTypeDuplication(vfs, csvPath, log, config);
   log('   Applying Session Details translations...');
   await applySessionDetailsTranslations(vfs, csvPath, metasessionId, sessionReportMap, log);
+  log('   Validating section titles against QMS section API...');
+  const titleCheck = await validateSectionTitlesAgainstApi(vfs, csvPath, log, config);
+  if (!titleCheck.ok) {
+    try {
+      if (vfs.remove) await vfs.remove(csvPath);
+      log('   Deleted invalid file.');
+    } catch (e) {
+      log(`   Error deleting file: ${e.message}`);
+    }
+    return { status: 'FAILED', errors: titleCheck.errors };
+  }
   log(`   Validating ${basename(csvPath)}...`);
   const { rows: parsedRows } = await readCsvFromVfs(vfs, csvPath);
   const { valid, errors } = validateCsvNewModeFromRows(parsedRows);
-  if (valid) {
+  const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
+    parsedRows,
+    config.fetchFn || fetch,
+  );
+  const allErrors = [...errors, ...practiceTypeErrors];
+  if (valid && practiceTypeErrors.length === 0) {
     log('   [SUCCESS] Validation passed.');
     return { status: 'VALID', errors: [] };
   }
   log('   [FAILURE] Validation failed.');
+  for (const err of allErrors) log(`      - ${err}`);
   try {
     if (vfs.remove) await vfs.remove(csvPath);
     log('   Deleted invalid file.');
   } catch (e) {
     log(`   Error deleting file: ${e.message}`);
   }
-  return { status: 'FAILED', errors };
+  return { status: 'FAILED', errors: allErrors };
 }
 
 /**
@@ -1445,8 +1501,10 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
           status: 'FAILED',
           errors: thankYouErr,
         });
-        abortPipeline(log, `Missing 'Thank You' slide in ${filename}`, thankYouErr);
-        return;
+        if (_abortOnError) {
+          abortPipeline(log, `Missing 'Thank You' slide in ${filename}`, thankYouErr);
+        }
+        continue;
       }
 
       if (slideValidationErrors.length > 0) {
@@ -1462,8 +1520,10 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
           status: 'FAILED',
           errors: slideValidationErrors,
         });
-        abortPipeline(log, `Slide structure validation failed for ${filename}`, slideValidationErrors);
-        return;
+        if (_abortOnError) {
+          abortPipeline(log, `Slide structure validation failed for ${filename}`, slideValidationErrors);
+        }
+        continue;
       }
     } else {
       allSlidesData = tempSlides;
@@ -1706,6 +1766,14 @@ export async function validatePresentationFile(ctx, pptxFilename) {
       csvOutcomes: buildCsvOutcomes(result.processingSummary, csvsPath),
     };
   } catch (e) {
+    if (e instanceof ValidationAbort) {
+      if (e.errors.length) {
+        pptxErrors.push(...e.errors);
+      } else {
+        pptxErrors.push(e.message);
+      }
+      return { pptxErrors, csvOutcomes: [] };
+    }
     if (e instanceof PipelineAbortError) {
       pptxErrors.push(...(e.errors || [e.message]));
     } else {

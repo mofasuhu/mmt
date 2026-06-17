@@ -47,10 +47,16 @@ function reportFromOutcome({ sourceUrl, pptxName, pptxErrors, outcome }) {
     csvErrors: [...(outcome.csvErrors || [])],
     metasessionErrors: [...(outcome.metasessionErrors || [])],
     sectionErrors: [],
+    sectionWarnings: [],
     missingQuestionErrors: [],
     downloadOk: true,
     downloadError: '',
   };
+}
+
+function normalizePresentationUrl(url) {
+  const match = String(url || '').match(/\/presentation\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? `https://docs.google.com/presentation/d/${match[1]}` : (url || '');
 }
 
 function formatReportBlock(report) {
@@ -60,8 +66,7 @@ function formatReportBlock(report) {
   ];
   if (report.pptxName) lines.push(`PPTX: ${report.pptxName}`);
   if (report.csvFilename) lines.push(`CSV: ${report.csvFilename}`);
-  if (report.sourceUrl) lines.push(`URL: ${report.sourceUrl}`);
-  if (report.metasessionId) lines.push(`Metasession ID: ${report.metasessionId}`);
+  if (report.sourceUrl) lines.push(`URL: ${normalizePresentationUrl(report.sourceUrl)}`);
   lines.push(`Overall: ${sessionPassed(report) ? 'PASSED' : 'FAILED'}`);
   lines.push('');
 
@@ -72,7 +77,7 @@ function formatReportBlock(report) {
     return `${lines.join('\n')}\n`;
   }
 
-  lines.push('--- PPTX / extract (step 2) ---');
+  lines.push('--- PPTX / extraction ---');
   if (report.pptxErrors.length) {
     for (const err of report.pptxErrors) lines.push(`  ${err}`);
   } else {
@@ -80,7 +85,7 @@ function formatReportBlock(report) {
   }
   lines.push('');
 
-  lines.push('--- CSV validation (step 2) ---');
+  lines.push('--- CSV validation ---');
   if (report.csvErrors.length) {
     for (const err of report.csvErrors) lines.push(`  ${err}`);
   } else {
@@ -88,7 +93,7 @@ function formatReportBlock(report) {
   }
   lines.push('');
 
-  lines.push('--- Metasession API (step 2/3) ---');
+  lines.push('--- Metasession API ---');
   if (report.metasessionErrors.length) {
     for (const err of report.metasessionErrors) lines.push(`  ${err}`);
   } else {
@@ -96,16 +101,19 @@ function formatReportBlock(report) {
   }
   lines.push('');
 
-  lines.push('--- Section validation (step 3) ---');
+  lines.push('--- Section validation ---');
   if (report.sectionErrors.length) {
     for (const err of report.sectionErrors) lines.push(`  ${err}`);
   } else {
     lines.push('  PASSED');
   }
+  if (report.sectionWarnings.length) {
+    for (const warn of report.sectionWarnings) lines.push(`  WARNING: ${warn}`);
+  }
   lines.push('');
 
   if (report.missingQuestionErrors.length) {
-    lines.push('--- Missing QMS questions (step 3) ---');
+    lines.push('--- Missing QMS questions ---');
     for (const err of report.missingQuestionErrors) lines.push(`  ${err}`);
     lines.push('');
   }
@@ -144,9 +152,50 @@ function buildReportText({ linksCsvPath, reports, sessionBlocks, started, comple
   return header + summary + sessionBlocks.join('');
 }
 
+function collectSessionIssues(report) {
+  const errors = [];
+  const warnings = [];
+  if (!report.downloadOk) {
+    errors.push(`Download: ${report.downloadError}`);
+    return { errors, warnings };
+  }
+  for (const err of report.pptxErrors) errors.push(`PPTX: ${err}`);
+  for (const err of report.csvErrors) errors.push(`CSV: ${err}`);
+  for (const err of report.metasessionErrors) errors.push(`Metasession API: ${err}`);
+  for (const err of report.sectionErrors) errors.push(`Section: ${err}`);
+  for (const err of report.missingQuestionErrors) errors.push(`Missing QMS: ${err}`);
+  for (const warn of report.sectionWarnings) warnings.push(`Section warning: ${warn}`);
+  return { errors, warnings };
+}
+
 function logSessionResult(log, report) {
-  const status = sessionPassed(report) ? 'PASSED' : 'FAILED';
-  log(`  ${sessionLabel(report)}: ${status}`);
+  const { errors, warnings } = collectSessionIssues(report);
+  const label = sessionLabel(report);
+  if (!sessionPassed(report)) {
+    log(`  ❌ ${label}: FAILED`);
+    for (const err of errors) log(`      ${err}`);
+    for (const warn of warnings) log(`      ⚠️  ${warn}`);
+  } else if (warnings.length) {
+    log(`  ⚠️  ${label}: PASSED (warnings)`);
+    for (const warn of warnings) log(`      ${warn}`);
+  } else {
+    log(`  ✅ ${label}: PASSED`);
+  }
+}
+
+function printDoneSummary(log, reports, reportPath) {
+  const passed = reports.filter((r) => sessionPassed(r)).length;
+  const failed = reports.length - passed;
+  const warned = reports.filter((r) => sessionPassed(r) && r.sectionWarnings.length).length;
+  if (failed && warned) {
+    log(`Done: ✅ ${passed}/${reports.length} passed, ❌ ${failed} failed, ⚠️  ${warned} with warnings — ${reportPath}`);
+  } else if (failed) {
+    log(`Done: ✅ ${passed}/${reports.length} passed, ❌ ${failed} failed — ${reportPath}`);
+  } else if (warned) {
+    log(`Done: ✅ ${passed}/${reports.length} passed, ⚠️  ${warned} with warnings — ${reportPath}`);
+  } else {
+    log(`Done: ✅ ${passed}/${reports.length} passed — ${reportPath}`);
+  }
 }
 
 /**
@@ -211,6 +260,7 @@ export async function runValidateOnly(ctx) {
         csvErrors: [],
         metasessionErrors: [],
         sectionErrors: [],
+        sectionWarnings: [],
         missingQuestionErrors: [],
         downloadOk: false,
         downloadError: item.error || 'Download failed',
@@ -238,6 +288,7 @@ export async function runValidateOnly(ctx) {
       }),
     );
     log(`Report: ${FULL_VALIDATION_PATH}`);
+    printDoneSummary(log, reports, FULL_VALIDATION_PATH);
     return { ok: true, reportPath: FULL_VALIDATION_PATH, reports };
   }
 
@@ -277,6 +328,7 @@ export async function runValidateOnly(ctx) {
             csvErrors: [],
             metasessionErrors: [],
             sectionErrors: [],
+            sectionWarnings: [],
             missingQuestionErrors: [],
             downloadOk: true,
             downloadError: '',
@@ -295,9 +347,10 @@ export async function runValidateOnly(ctx) {
             outcome,
           });
 
-          if (outcome.csvPath) {
+          if (outcome.csvPath && !outcome.csvErrors.length) {
             const {
               sectionErrors,
+              sectionWarnings,
               missingQuestionErrors,
               metasessionId,
             } = await validateSessionCsv(validateCtx, outcome.csvPath, {
@@ -306,6 +359,7 @@ export async function runValidateOnly(ctx) {
               fatalMetasessionApi: false,
             });
             sessionReport.sectionErrors = sectionErrors;
+            sessionReport.sectionWarnings = sectionWarnings;
             sessionReport.missingQuestionErrors = missingQuestionErrors;
             if (metasessionId) {
               sessionReport.metasessionId = metasessionId;
@@ -328,6 +382,7 @@ export async function runValidateOnly(ctx) {
           csvErrors: [],
           metasessionErrors: [],
           sectionErrors: [],
+          sectionWarnings: [],
           missingQuestionErrors: [],
           downloadOk: true,
           downloadError: '',
@@ -344,12 +399,11 @@ export async function runValidateOnly(ctx) {
   }
 
   const completed = stamp();
-  const passed = reports.filter((r) => sessionPassed(r)).length;
   await vfs.writeText(
     FULL_VALIDATION_PATH,
     buildReportText({ linksCsvPath, reports, sessionBlocks, started, completed }),
   );
-  log(`Done: ${passed}/${reports.length} passed — ${FULL_VALIDATION_PATH}`);
+  printDoneSummary(log, reports, FULL_VALIDATION_PATH);
 
   return {
     ok: true,

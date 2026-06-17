@@ -6,6 +6,7 @@ import {
   extractContentForInjection,
   injectRemoteContent,
 } from '../latex/braceParser.js';
+import { readRemoteSourceSlideId } from '../shared/sessionCsv.js';
 
 const SHEETS_APPEND_CHUNK_SIZE = 200;
 const SHEETS_RETRY_MAX = 8;
@@ -275,7 +276,14 @@ async function fetchNewId(ctx) {
  */
 async function replaceInFile(vfs, filePath, oldId, newId) {
   try {
-    const text = await vfs.readText(filePath);
+    const bytes = await vfs.readBytes(filePath);
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      // Match Python _replace_in_file: skip binary assets (pdf, jpg, etc.).
+      return false;
+    }
     if (!text.includes(oldId)) return false;
     await vfs.writeText(filePath, text.split(oldId).join(newId));
     return true;
@@ -555,6 +563,7 @@ export async function runCopySlidesContent(ctx) {
       if (!(await vfs.isDir(level3Path)) || !/^\d{12}$/.test(item)) continue;
 
       const folderId = item;
+      const remoteSourceId = (await readRemoteSourceSlideId(vfs, level3Path)) || folderId;
       const texFiles = (await vfs.listDir(level3Path)).filter((f) => f.endsWith('.tex'));
       if (!texFiles.length) {
         log(`- Warning: No .tex file found inside ${folderId}. Skipping sync for this ID.`);
@@ -562,7 +571,7 @@ export async function runCopySlidesContent(ctx) {
       }
 
       const localTexPath = `${level3Path}/${texFiles[0]}`;
-      const lookupId = await resolveIdViaSheet(ctx, folderId, (cid) =>
+      const lookupId = await resolveIdViaSheet(ctx, remoteSourceId, (cid) =>
         vfs.exists(`${slidesArchive}/${cid}`),
       );
       const remoteFolderPath = `${slidesArchive}/${lookupId}`;
