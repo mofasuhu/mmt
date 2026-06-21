@@ -31,6 +31,7 @@ import {
   parseCsvText,
   rowsToCsv,
   validatePracticeQuestionTypesFromRows,
+  processQuestionIdsFromApi,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -1069,106 +1070,30 @@ function dedupeRowsByQuestionId(rows) {
   return deduped;
 }
 
-async function applyQuestionTypeDuplication(vfs, csvPath, log, config) {
-  try {
-    const { headers, rows } = await readCsvFromVfs(vfs, csvPath);
-    const baseIdPattern = /^\d{12}$/;
-    const baseIdCounts = {};
-    for (const row of rows) {
-      const qid = csvCellStr(row.question_id);
-      if (qid && baseIdPattern.test(qid)) {
-        baseIdCounts[qid] = (baseIdCounts[qid] || 0) + 1;
-      }
+async function applyQuestionTypeDuplication(vfs, csvPath, log, config, subject = '') {
+  const fetchFn = config.fetchFn || fetch;
+  const { headers, rows } = await readCsvFromVfs(vfs, csvPath);
+  const [expanded, errors] = await processQuestionIdsFromApi(rows, {
+    subject,
+    log,
+    fetchFn,
+  });
+  if (errors.length) return errors;
+
+  const changed = expanded.length !== rows.length
+    || expanded.some((row, i) =>
+      csvCellStr(row.question_id) !== csvCellStr(rows[i]?.question_id)
+      || csvCellStr(row.slide_id) !== csvCellStr(rows[i]?.slide_id));
+
+  if (changed) {
+    const dataRows = expanded.map((row) => headers.map((col) => row[col] ?? ''));
+    await vfs.write(csvPath, rowsToCsv(headers, dataRows));
+    if (expanded.length !== rows.length) {
+      log(`   [Question ID Expansion] ${rows.length} rows -> ${expanded.length} rows`);
     }
-
-    const idsToQuery = Object.keys(baseIdCounts);
-    const metadata = idsToQuery.length > 0
-      ? await fetchQuestionsMetadata(idsToQuery, log, config)
-      : null;
-
-    if (idsToQuery.length > 0 && metadata === null) {
-      log('   [WARNING] Could not fetch question metadata; skipping expansion.');
-    } else if (idsToQuery.length === 0) {
-      log('   No 12-digit question_ids to expand.');
-    }
-
-    const newRows = [];
-    const expandedSingleRowBases = new Set();
-    const mappedPartCounters = {};
-
-    for (const row of rows) {
-      const questionId = csvCellStr(row.question_id);
-      if (!questionId || !baseIdPattern.test(questionId)) {
-        newRows.push(row);
-        continue;
-      }
-      if (!metadata || !(questionId in metadata)) {
-        newRows.push(row);
-        continue;
-      }
-
-      let numParts = 1;
-      try {
-        numParts = parseInt(metadata[questionId].number_of_parts || 1, 10) || 1;
-      } catch {
-        numParts = 1;
-      }
-      if (numParts <= 1) {
-        newRows.push(row);
-        continue;
-      }
-
-      const slideCount = baseIdCounts[questionId] || 0;
-      if (slideCount === numParts) {
-        const partIndex = (mappedPartCounters[questionId] || 0) + 1;
-        mappedPartCounters[questionId] = partIndex;
-        log(`   [Mapping] question_id '${questionId}' slide -> '${questionId}.${partIndex}'`);
-        newRows.push(applyMultipartQuestionId(row, questionId, partIndex));
-      } else if (slideCount === 1) {
-        if (expandedSingleRowBases.has(questionId)) continue;
-        expandedSingleRowBases.add(questionId);
-        const expandedIds = Array.from({ length: numParts }, (_, n) => `${questionId}.${n + 1}`);
-        log(`   [Expanding] question_id '${questionId}' (number_of_parts=${numParts}) -> ${expandedIds.join(', ')}`);
-        for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
-          newRows.push(applyMultipartQuestionId(row, questionId, partIndex));
-        }
-      } else if (slideCount > numParts) {
-        const partIndex = (mappedPartCounters[questionId] || 0) + 1;
-        if (partIndex > numParts) {
-          log(`   [Skipping duplicate] extra slide for multipart question_id '${questionId}'`);
-          continue;
-        }
-        mappedPartCounters[questionId] = partIndex;
-        log(`   [Mapping] question_id '${questionId}' slide -> '${questionId}.${partIndex}'`);
-        newRows.push(applyMultipartQuestionId(row, questionId, partIndex));
-      } else {
-        if (expandedSingleRowBases.has(questionId)) continue;
-        expandedSingleRowBases.add(questionId);
-        const expandedIds = Array.from({ length: numParts }, (_, n) => `${questionId}.${n + 1}`);
-        log(`   [Expanding] question_id '${questionId}' (number_of_parts=${numParts}) -> ${expandedIds.join(', ')}`);
-        for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
-          newRows.push(applyMultipartQuestionId(row, questionId, partIndex));
-        }
-      }
-    }
-
-    let finalRows = dedupeRowsByQuestionId(newRows);
-    finalRows = finalRows.map(clearSlideIdForMediaRow);
-
-    if (multipartRowsChanged(rows, finalRows)) {
-      const dataRows = finalRows.map((row) => headers.map((col) => row[col] ?? ''));
-      await vfs.write(csvPath, rowsToCsv(headers, dataRows));
-      if (newRows.length !== finalRows.length) {
-        log(`   [Deduped] Removed ${newRows.length - finalRows.length} duplicate question_id row(s)`);
-      }
-      if (finalRows.length !== rows.length) {
-        log(`   [Question ID Expansion] ${rows.length} rows -> ${finalRows.length} rows`);
-      }
-    }
-    log('   Applied Question Type duplication.');
-  } catch (e) {
-    log(`   [ERROR] Failed to apply Question Type duplication: ${e.message}`);
   }
+  log('   Applied Question Type duplication.');
+  return [];
 }
 
 async function applySessionDetailsTranslations(vfs, csvPath, metasessionId, sessionReportMap, log) {
@@ -1363,8 +1288,26 @@ async function processAndValidateCsvNewMode(
 ) {
   log(`\n-> Processing ${basename(csvPath)} (NEW MODE)...`);
   await saveToCsv(vfs, csvPath, columns, rows, log);
-  log('   Applying Question Type duplication (via QMS API)...');
-  await applyQuestionTypeDuplication(vfs, csvPath, log, config);
+
+  const reportRow = sessionReportMap?.[metasessionId] || {};
+  const subject = csvCellStr(reportRow.Subject);
+
+  log('   Processing question IDs from QMS API...');
+  const questionIdErrors = await applyQuestionTypeDuplication(
+    vfs, csvPath, log, config, subject,
+  );
+  if (questionIdErrors.length > 0) {
+    log('   [FAILURE] Question ID processing failed.');
+    for (const err of questionIdErrors) log(`      - ${err}`);
+    try {
+      if (vfs.remove) await vfs.remove(csvPath);
+      log('   Deleted invalid file.');
+    } catch (e) {
+      log(`   Error deleting file: ${e.message}`);
+    }
+    return { status: 'FAILED', errors: questionIdErrors };
+  }
+
   log('   Applying Session Details translations...');
   await applySessionDetailsTranslations(vfs, csvPath, metasessionId, sessionReportMap, log);
   log('   Validating section titles against QMS section API...');
@@ -1384,6 +1327,7 @@ async function processAndValidateCsvNewMode(
   const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
     parsedRows,
     config.fetchFn || fetch,
+    { subject },
   );
   const allErrors = [...errors, ...practiceTypeErrors];
   if (valid && practiceTypeErrors.length === 0) {

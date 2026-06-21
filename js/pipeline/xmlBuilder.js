@@ -12,6 +12,7 @@ import {
   xmlQuestionPlacement,
   loadSessionRows,
   writeSessionRows,
+  processQuestionIdsFromApi,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -577,7 +578,32 @@ function createEl(doc, tag, attrs = {}, text = null) {
 async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn) {
   const missingQuestions = [];
   const verbatimTasks = [];
-  const sessionRowsProcessed = sessionRows.map((r) => ({ ...r }));
+
+  const sessionSubject = csvCellStr(detailsRow.Subject);
+  const [expandedRows, expandErrors] = await processQuestionIdsFromApi(sessionRows, {
+    subject: sessionSubject,
+    log: (msg) => {
+      if (msg.includes('[ERROR]')) log(msg);
+      else log(msg);
+    },
+    fetchFn,
+  });
+  let sessionRowsProcessed;
+  if (expandErrors.length) {
+    log('Question ID expansion safety net failed:');
+    for (const err of expandErrors) log(`  - ${err}`);
+    sessionRowsProcessed = sessionRows.map((r) => ({ ...r }));
+  } else if (
+    expandedRows.length !== sessionRows.length
+    || expandedRows.some((row, i) =>
+      csvCellStr(row.question_id) !== csvCellStr(sessionRows[i]?.question_id)
+      || csvCellStr(row.slide_id) !== csvCellStr(sessionRows[i]?.slide_id))
+  ) {
+    log('Expanded multipart question rows during XML build (CSV was not pre-expanded).');
+    sessionRowsProcessed = expandedRows.map((r) => ({ ...r }));
+  } else {
+    sessionRowsProcessed = sessionRows.map((r) => ({ ...r }));
+  }
 
   const doc = document.implementation.createDocument('', '', null);
   const metaAttributes = buildMetasessionRootAttributes(apiData, detailsRow);

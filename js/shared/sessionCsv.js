@@ -798,6 +798,209 @@ export function slideNumberFromRow(row, fallback = null) {
 
 export const PRACTICE_FORBIDDEN_QUESTION_TYPES = new Set(['puzzle', 'opinion']);
 
+/** Parse author question_id input to 12-digit base only (strip .N / spaced decimals). */
+export function normalizeQuestionIdBase(raw) {
+  let s = csvCellStr(raw);
+  if (!s) return null;
+  s = s.replace(/\s*checkpoint\s*$/i, '').trim();
+  const compact = s.replace(/\s+/g, '');
+  const m = compact.match(/^(\d{12})/);
+  if (m) return m[1];
+  const m2 = s.match(/^(\d{12})/);
+  return m2 ? m2[1] : null;
+}
+
+export function normalizeQuestionIdsInRows(rows) {
+  return rows.map((row) => {
+    const r = { ...row };
+    const base = normalizeQuestionIdBase(r.question_id);
+    if (base) {
+      r.question_id = base;
+      return clearSlideIdForMediaRow(r);
+    }
+    return r;
+  });
+}
+
+export function dedupeQuestionRowsByBasePerSection(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const base = normalizeQuestionIdBase(row.question_id);
+    if (!base) {
+      out.push(row);
+      continue;
+    }
+    const sid = normalizeSectionId(row.section_id) || '';
+    const key = `${sid}\0${base}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const r = { ...row, question_id: base };
+    out.push(clearSlideIdForMediaRow(r));
+  }
+  return out;
+}
+
+export function validateQuestionMetadataParts(baseId, metadata) {
+  const errors = [];
+  let numParts;
+  try {
+    numParts = Number.parseInt(metadata.number_of_parts ?? 1, 10);
+    if (!Number.isFinite(numParts)) throw new Error();
+  } catch {
+    errors.push(`question_id '${baseId}': invalid number_of_parts in API metadata.`);
+    return errors;
+  }
+  const types = metadata.type;
+  if (!Array.isArray(types) || !types.length) {
+    errors.push(`question_id '${baseId}': missing or empty type array in API metadata.`);
+    return errors;
+  }
+  if (types.length < numParts) {
+    errors.push(
+      `question_id '${baseId}': API type array length ${types.length} `
+      + `is less than number_of_parts ${numParts}.`,
+    );
+  }
+  return errors;
+}
+
+/**
+ * @param {string[]} parentBaseIds
+ * @param {{ subject?: string, fetchFn?: typeof fetch }} [options]
+ * @returns {Promise<[Map<string, object>, string[]]>}
+ */
+export async function fetchQuestionMetadataByParentIds(
+  parentBaseIds,
+  { subject = '', fetchFn = fetch } = {},
+) {
+  const errors = [];
+  if (!parentBaseIds.length) return [new Map(), errors];
+
+  const { fetchQuestionsMetadata, fetchTranslationForParents, translationResponseToParentMap } =
+    await import('./sectionsApi.js');
+  const { SUBJECTS_REQUIRING_TRANSLATION } = await import('./constants.js');
+
+  let translationMap = {};
+  let apiIds = [...parentBaseIds];
+  const needsTranslation = SUBJECTS_REQUIRING_TRANSLATION.has(subject);
+
+  if (needsTranslation) {
+    const trans = await fetchTranslationForParents(parentBaseIds, { fetchFn });
+    if (trans == null) {
+      return [
+        new Map(),
+        [`Could not fetch question translations for ${parentBaseIds.length} question_id(s).`],
+      ];
+    }
+    translationMap = translationResponseToParentMap(trans);
+    const missingTrans = parentBaseIds.filter((p) => !translationMap[p]);
+    if (missingTrans.length) {
+      return [
+        new Map(),
+        missingTrans.map((p) => `Could not resolve translated question_id for parent '${p}'.`),
+      ];
+    }
+    apiIds = parentBaseIds.map((p) => translationMap[p]);
+  }
+
+  const raw = await fetchQuestionsMetadata(apiIds, { fetchFn });
+  if (raw == null) {
+    return [
+      new Map(),
+      [`Could not fetch QMS question metadata for ${parentBaseIds.length} question_id(s).`],
+    ];
+  }
+
+  const apiMetadata = new Map();
+  for (const item of raw) {
+    if (item?.question_id != null) apiMetadata.set(String(item.question_id), item);
+  }
+
+  const parentMetadata = new Map();
+  for (const parentId of parentBaseIds) {
+    const apiId = needsTranslation ? translationMap[parentId] : parentId;
+    const meta = apiMetadata.get(apiId);
+    if (!meta) {
+      errors.push(`No QMS metadata for question_id '${parentId}' (API id '${apiId}').`);
+      continue;
+    }
+    const metaErrors = validateQuestionMetadataParts(parentId, meta);
+    if (metaErrors.length) {
+      errors.push(...metaErrors);
+      continue;
+    }
+    parentMetadata.set(parentId, meta);
+  }
+  if (errors.length) return [new Map(), errors];
+  return [parentMetadata, errors];
+}
+
+export function expandQuestionRowsFromApi(rows, metadataByParent) {
+  const out = [];
+  for (const row of rows) {
+    const base = normalizeQuestionIdBase(row.question_id);
+    if (!base) {
+      out.push(row);
+      continue;
+    }
+    const meta = metadataByParent.get(base);
+    if (!meta) {
+      out.push(row);
+      continue;
+    }
+    const numParts = Number.parseInt(meta.number_of_parts ?? 1, 10) || 1;
+    if (numParts <= 1) {
+      const r = { ...row, question_id: base };
+      out.push(clearSlideIdForMediaRow(r));
+    } else {
+      for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
+        out.push({ ...row, question_id: `${base}.${partIndex}`, slide_id: '' });
+      }
+    }
+  }
+  return out;
+}
+
+function questionRowsContentChanged(before, after) {
+  if (before.length !== after.length) return true;
+  for (let i = 0; i < before.length; i += 1) {
+    if (csvCellStr(before[i].question_id) !== csvCellStr(after[i].question_id)) return true;
+    if (csvCellStr(before[i].slide_id) !== csvCellStr(after[i].slide_id)) return true;
+  }
+  return false;
+}
+
+/**
+ * @param {Record<string, string>[]} rows
+ * @param {{ subject?: string, log?: (msg: string) => void, fetchFn?: typeof fetch }} [options]
+ * @returns {Promise<[Record<string, string>[], string[]]>}
+ */
+export async function processQuestionIdsFromApi(
+  rows,
+  { subject = '', log = () => {}, fetchFn = fetch } = {},
+) {
+  let processed = normalizeQuestionIdsInRows(rows);
+  processed = dedupeQuestionRowsByBasePerSection(processed);
+  const baseIds = collectBaseQuestionIds(processed);
+  if (!baseIds.length) return [processed, []];
+
+  const [metadataByParent, errors] = await fetchQuestionMetadataByParentIds(
+    baseIds,
+    { subject, fetchFn },
+  );
+  if (errors.length) {
+    for (const err of errors) log(`   [ERROR] ${err}`);
+    return [processed, errors];
+  }
+
+  const expanded = expandQuestionRowsFromApi(processed, metadataByParent);
+  if (expanded.length !== processed.length) {
+    log(`   [Question ID Expansion] ${processed.length} rows -> ${expanded.length} rows`);
+  }
+  return [expanded, []];
+}
+
 /**
  * @param {string} qId
  * @returns {[string | null, number | null]}
@@ -895,21 +1098,18 @@ export function validatePracticeQuestionTypes(rows, metadataById) {
  * @param {typeof fetch} fetchFn
  * @returns {Promise<string[]>}
  */
-export async function validatePracticeQuestionTypesFromRows(rows, fetchFn = fetch) {
+export async function validatePracticeQuestionTypesFromRows(
+  rows,
+  fetchFn = fetch,
+  { subject = '' } = {},
+) {
   const practiceIds = collectBaseQuestionIds(rows, { practiceOnly: true });
   if (!practiceIds.length) return [];
 
-  const { fetchQuestionsMetadata } = await import('./sectionsApi.js');
-  const raw = await fetchQuestionsMetadata(practiceIds, { fetchFn });
-  if (raw == null) {
-    return ['Could not fetch QMS question metadata to validate practice question types.'];
-  }
-
-  const metadataById = new Map();
-  for (const item of raw) {
-    if (item && item.question_id != null) {
-      metadataById.set(String(item.question_id), item);
-    }
-  }
+  const [metadataById, errors] = await fetchQuestionMetadataByParentIds(
+    practiceIds,
+    { subject, fetchFn },
+  );
+  if (errors.length) return errors;
   return validatePracticeQuestionTypes(rows, metadataById);
 }

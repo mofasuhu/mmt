@@ -9,6 +9,7 @@ import {
   THANK_YOU_STANDARDIZED,
   SECTION_TITLE_TARGET_RGB,
 } from '../shared/constants.js';
+import { normalizeQuestionIdBase } from '../shared/sessionCsv.js';
 
 const ARABIC_RE = /[\u0600-\u06FF]/;
 const SCIENCE_KEYWORDS = ['علوم', 'فيزياء', 'كيمياء', 'أحياء'];
@@ -93,6 +94,8 @@ export function extractFieldValue(text, field, slideNumber, allFields, warn = ()
 
   if (field === 'question_id') {
     v = v.replace(/\s*checkpoint\s*$/i, '').trim();
+    const base = normalizeQuestionIdBase(v);
+    return base || '';
   }
 
   if (field === 'homework') {
@@ -138,7 +141,7 @@ export function extractFieldValue(text, field, slideNumber, allFields, warn = ()
   }
 
   const normMatch = v.match(/^(\d{12})\s+\.\s+(\d{1,2})$/);
-  if (normMatch) {
+  if (field !== 'question_id' && normMatch) {
     v = `${normMatch[1]}.${normMatch[2]}`;
   }
 

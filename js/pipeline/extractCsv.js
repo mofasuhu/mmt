@@ -32,6 +32,7 @@ import {
   isSlideOrMediaId,
   clearSlideIdForMediaRow,
   validatePracticeQuestionTypesFromRows,
+  processQuestionIdsFromApi,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -900,111 +901,26 @@ function applyMultipartQuestionId(row, baseId, partIndex) {
   };
 }
 
-async function expandQuestionIdsFromApi(vfs, csvPath, log, config) {
-  try {
-    const { headers, rows } = await readCsvFromVfs(vfs, csvPath);
-    const baseIdPattern = /^\d{12}$/;
-    const baseIdCounts = {};
+async function expandQuestionIdsFromApi(vfs, csvPath, log, config, subject = '') {
+  const fetchFn = config.fetchFn || fetch;
+  const { headers, rows } = await readCsvFromVfs(vfs, csvPath);
+  const [expanded, errors] = await processQuestionIdsFromApi(rows, {
+    subject,
+    log,
+    fetchFn,
+  });
+  if (errors.length) return errors;
 
-    for (const row of rows) {
-      const qid = csvCellStr(row.question_id);
-      if (qid && baseIdPattern.test(qid)) {
-        baseIdCounts[qid] = (baseIdCounts[qid] || 0) + 1;
-      }
-    }
+  const changed = expanded.length !== rows.length
+    || expanded.some((row, i) =>
+      csvCellStr(row.question_id) !== csvCellStr(rows[i]?.question_id)
+      || csvCellStr(row.slide_id) !== csvCellStr(rows[i]?.slide_id));
 
-    const idsToQuery = Object.keys(baseIdCounts);
-    const metadata = idsToQuery.length > 0
-      ? await fetchQuestionsMetadata(idsToQuery, log, config)
-      : null;
-
-    if (idsToQuery.length > 0 && metadata === null) {
-      log('   [Warning] Could not fetch question metadata; skipping expansion.');
-    }
-
-    const expandedRows = [];
-    const expandedSingleRowBases = new Set();
-    const mappedPartCounters = {};
-
-    for (const row of rows) {
-      const qid = csvCellStr(row.question_id);
-
-      if (!qid || !baseIdPattern.test(qid)) {
-        expandedRows.push(row);
-        continue;
-      }
-
-      if (!metadata || !(qid in metadata)) {
-        expandedRows.push(row);
-        continue;
-      }
-
-      let numParts = 1;
-      try {
-        numParts = parseInt(metadata[qid].number_of_parts || 1, 10) || 1;
-      } catch {
-        numParts = 1;
-      }
-
-      if (numParts <= 1) {
-        expandedRows.push(row);
-        continue;
-      }
-
-      const slideCount = baseIdCounts[qid] || 0;
-      if (slideCount === numParts) {
-        const partIndex = (mappedPartCounters[qid] || 0) + 1;
-        mappedPartCounters[qid] = partIndex;
-        const partId = `${qid}.${partIndex}`;
-        log(`   [Mapping] question_id '${qid}' slide -> '${partId}'`);
-        expandedRows.push(applyMultipartQuestionId(row, qid, partIndex));
-      } else if (slideCount === 1) {
-        if (expandedSingleRowBases.has(qid)) continue;
-        expandedSingleRowBases.add(qid);
-        const expandedIds = Array.from({ length: numParts }, (_, n) => `${qid}.${n + 1}`);
-        log(`   [Expanding] question_id '${qid}' (number_of_parts=${numParts}) -> ${expandedIds.join(', ')}`);
-        for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
-          expandedRows.push(applyMultipartQuestionId(row, qid, partIndex));
-        }
-      } else if (slideCount > numParts) {
-        const partIndex = (mappedPartCounters[qid] || 0) + 1;
-        if (partIndex > numParts) {
-          log(`   [Skipping duplicate] extra slide for multipart question_id '${qid}'`);
-          continue;
-        }
-        mappedPartCounters[qid] = partIndex;
-        const partId = `${qid}.${partIndex}`;
-        log(`   [Mapping] question_id '${qid}' slide -> '${partId}'`);
-        expandedRows.push(applyMultipartQuestionId(row, qid, partIndex));
-      } else {
-        if (expandedSingleRowBases.has(qid)) continue;
-        expandedSingleRowBases.add(qid);
-        const expandedIds = Array.from({ length: numParts }, (_, n) => `${qid}.${n + 1}`);
-        log(`   [Expanding] question_id '${qid}' (number_of_parts=${numParts}) -> ${expandedIds.join(', ')}`);
-        for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
-          expandedRows.push(applyMultipartQuestionId(row, qid, partIndex));
-        }
-      }
-    }
-
-    let finalRows = dedupeRowsByQuestionId(expandedRows, (r) => r.question_id);
-    finalRows = finalRows.map(clearSlideIdForMediaRow);
-
-    if (multipartRowsChanged(rows, finalRows)) {
-      const columns = headers;
-      const dataRows = finalRows.map((row) => columns.map((col) => row[col] ?? ''));
-      await vfs.write(csvPath, rowsToCsv(columns, dataRows));
-
-      if (expandedRows.length !== finalRows.length) {
-        log(`   [Deduped] Removed ${expandedRows.length - finalRows.length} duplicate question_id row(s)`);
-      }
-      if (finalRows.length !== rows.length) {
-        log(`   [Question ID Expansion] ${rows.length} rows -> ${finalRows.length} rows`);
-      }
-    }
-  } catch (e) {
-    log(`   [Error] Failed to expand question IDs: ${e.message}`);
+  if (changed) {
+    const dataRows = expanded.map((row) => headers.map((col) => row[col] ?? ''));
+    await vfs.write(csvPath, rowsToCsv(headers, dataRows));
   }
+  return [];
 }
 
 async function applyLanguageAndNumerals(vfs, csvPath, reportRow, log) {
@@ -1231,6 +1147,24 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       log(`-> Saving to ${finalSaveName}...`);
       await saveToCsv(vfs, saveFilepath, allSlidesData, true, log);
 
+      const subject = csvCellStr(reportRow?.Subject);
+
+      log('   Processing question IDs from QMS API...');
+      const questionIdErrors = await expandQuestionIdsFromApi(
+        vfs, saveFilepath, log, config, subject,
+      );
+      if (questionIdErrors.length > 0) {
+        log('   [FAILURE] Question ID processing failed.');
+        for (const err of questionIdErrors) log(`     - ${err}`);
+        try {
+          if (vfs.remove) await vfs.remove(saveFilepath);
+          log('   Deleted invalid file.');
+        } catch (e) {
+          log(`   Error deleting file: ${e.message}`);
+        }
+        abortPipeline(log, `Question ID processing failed for ${finalSaveName}`, questionIdErrors);
+      }
+
       log('   Validating extracted content (new mode)...');
       const { rows } = await readCsvFromVfs(vfs, saveFilepath);
       const { valid: isValidContent, errors: contentErrors } = validateCsvNewModeFromRows(rows);
@@ -1256,14 +1190,12 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       } else {
         log('   [SUCCESS] Content validation passed.');
 
-        log('   Expanding question IDs from QMS metadata API...');
-        await expandQuestionIdsFromApi(vfs, saveFilepath, log, config);
-
         log('   Validating practice question types...');
         const { rows: expandedRows } = await readCsvFromVfs(vfs, saveFilepath);
         const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
           expandedRows,
           ctx.fetchFn || config.fetchFn,
+          { subject },
         );
         if (practiceTypeErrors.length > 0) {
           log('   [FAILURE] Practice question type validation failed.');
