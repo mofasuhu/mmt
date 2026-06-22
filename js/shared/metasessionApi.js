@@ -1,6 +1,6 @@
 /** Metasession API client — port of metasession_api.py */
 
-import { normalizeMetasessionId } from './sessionCsv.js';
+import { normalizeMetasessionId, validateMetasessionTypeSupported } from './sessionCsv.js';
 
 const API_URL = 'https://admin.classes.nagwa.com/api/v1/metasessions/{metasession_id}/';
 const API_KEY = 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc';
@@ -255,6 +255,15 @@ export async function getRawMetasessionData(metasessionId, { fatal = true, log =
     if (fatal) {
       log(`   [FATAL] Could not fetch metasession data for '${metasessionId}' after ${MAX_RETRIES} attempts. Terminating.`);
       throw new Error(`Could not fetch metasession data for '${metasessionId}'`);
+    }
+    return null;
+  }
+
+  const typeErrors = validateMetasessionTypeSupported(apiData.metasession_type);
+  if (typeErrors.length) {
+    for (const err of typeErrors) log(`   [FATAL] ${err}`);
+    if (fatal) {
+      throw new Error(typeErrors[0]);
     }
     return null;
   }

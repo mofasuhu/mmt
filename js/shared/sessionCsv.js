@@ -602,8 +602,68 @@ export function normalizeMetasessionId(raw) {
 
 export function normalizeSectionType(raw, defaultVal = 'regular') {
   const s = csvCellStr(raw) || csvCellStr(defaultVal) || 'regular';
-  if (s.toLowerCase() === 'full curriculum') return 'regular';
+  const lowered = s.toLowerCase();
+  if (lowered === 'full curriculum') return 'regular';
+  if (lowered === 'final revision') return 'revision';
   return s;
+}
+
+export const SUPPORTED_METASESSION_TYPE_LABELS = new Set(['full curriculum', 'final revision']);
+
+export function metasessionTypeLabel(raw) {
+  return csvCellStr(raw);
+}
+
+/** @returns {string[]} */
+export function validateMetasessionTypeSupported(metasessionType) {
+  const label = metasessionTypeLabel(metasessionType);
+  if (!label) return ['Metasession API did not return metasession_type.'];
+  if (!SUPPORTED_METASESSION_TYPE_LABELS.has(label.toLowerCase())) {
+    return [`The session type is '${label}' and the tool doesn't handle this type till now.`];
+  }
+  return [];
+}
+
+export function expectedSectionTypeForMetasessionType(metasessionType) {
+  if (metasessionTypeLabel(metasessionType).toLowerCase() === 'final revision') return 'revision';
+  return 'regular';
+}
+
+/**
+ * @param {string} metasessionType
+ * @param {{ slides?: Record<string, string>[], csvRows?: Record<string, string>[] }} [sources]
+ * @returns {string[]}
+ */
+export function validateSectionTypesForMetasessionType(metasessionType, { slides = null, csvRows = null } = {}) {
+  const expected = expectedSectionTypeForMetasessionType(metasessionType);
+  if (expected !== 'revision') return [];
+
+  const errors = [];
+  const inspect = (label, item) => {
+    const raw = csvCellStr(item.section_type);
+    if (!raw) return;
+    const normalized = normalizeSectionType(raw, expected);
+    if (normalized.toLowerCase() !== expected) {
+      errors.push(
+        `${label}: section_type '${raw}' is invalid for `
+        + "metasession_type 'Final Revision' (must be 'revision').",
+      );
+    }
+  };
+
+  if (slides) {
+    for (const slide of slides) {
+      const sn = csvCellStr(slide.slide_number) || '?';
+      inspect(`Slide ${sn}`, slide);
+    }
+  }
+  if (csvRows) {
+    for (const row of csvRows) {
+      const sn = csvCellStr(row.slide_number) || '?';
+      inspect(`Slide ${sn}`, row);
+    }
+  }
+  return errors;
 }
 
 /** ``revision`` sections skip exact question-id cross-check against the section API. */

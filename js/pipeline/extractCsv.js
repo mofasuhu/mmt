@@ -33,6 +33,7 @@ import {
   clearSlideIdForMediaRow,
   validatePracticeQuestionTypesFromRows,
   processQuestionIdsFromApi,
+  validateSectionTypesForMetasessionType,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -1140,6 +1141,21 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       log(`-> Found metasession_id: ${metaId}`);
       log('   Fetching metasession data from API...');
       const reportRow = await getMetasessionReportRow(metaId, apiOpts);
+
+      const sectionTypeErrors = validateSectionTypesForMetasessionType(
+        csvCellStr(reportRow?.['Class Type']),
+        { slides: allSlidesData },
+      );
+      if (sectionTypeErrors.length > 0) {
+        log('   [FAILURE] Metasession section_type validation failed.');
+        for (const err of sectionTypeErrors) log(`     - ${err}`);
+        abortPipeline(
+          log,
+          `Invalid section_type for metasession ${metaId}`,
+          sectionTypeErrors,
+          { filename: `${metaId}_${originalBaseName}.csv` },
+        );
+      }
 
       const finalSaveName = `${metaId}_${originalBaseName}.csv`;
       const saveFilepath = joinPath(csvsPath, finalSaveName);
