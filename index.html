@@ -32,7 +32,7 @@
 
       <div class="auth-block">
         <h3>Google account</h3>
-        <p class="auth-hint">Drive (slide download) and Sheets (step 6). With shared tokens deployed, no sign-in is required.</p>
+        <p class="auth-hint">Sign in with Google for Drive (slide download) and Sheets (step 6).</p>
         <small id="auth-status">Checking…</small>
         <div class="btn-row auth-buttons">
           <button type="button" id="sign-in-google" class="primary">Sign in with Google</button>
@@ -40,7 +40,7 @@
         </div>
         <details class="auth-local-details">
           <summary>Admin: static token files</summary>
-          <p class="auth-hint">Place next to <code>index.html</code> (local dev or committed for shared team auth on GitHub Pages):</p>
+          <p class="auth-hint">Optional — place next to <code>index.html</code> for local dev (<code>node proxy/dev-server.mjs</code>):</p>
           <ul class="auth-files">
             <li><code>credentials.json</code></li>
             <li><code>token.json</code> — Drive</li>
@@ -117,9 +117,9 @@
   </main>
 
   <footer class="app-footer">
-    <p>Chrome or Edge recommended. With shared tokens deployed, no Google sign-in is needed. Otherwise sign in, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
+    <p>Chrome or Edge recommended. Sign in with Google, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
   </footer>
 
-  <script type="module" src="js/main.js?v=46"></script>
+  <script type="module" src="js/main.js?v=47"></script>
 </body>
 </html>
