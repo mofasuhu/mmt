@@ -274,7 +274,26 @@ export function applySlideIdMapToCsvRows(rows, slideNumberToPackageId) {
   return changes;
 }
 
-export function patchPackageXmlSlideIds(xmlText, slideNumberToPackageId) {
+export function patchPackageXmlSlideIds(xmlText, slideNumberToPackageId, packagePlan = null) {
+  if (packagePlan?.length) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlText, 'application/xml');
+    const xmlSlides = iterSlidesDocumentOrder(doc.documentElement);
+    let changes = 0;
+    for (let i = 0; i < Math.min(xmlSlides.length, packagePlan.length); i += 1) {
+      const slideElem = xmlSlides[i];
+      const packageId = csvCellStr(packagePlan[i].packageSlideId ?? packagePlan[i].package_slide_id);
+      if (!packageId) continue;
+      const currentId = csvCellStr(slideElem.getAttribute('slide_id'));
+      if (currentId !== packageId) {
+        slideElem.setAttribute('slide_id', packageId);
+        changes += 1;
+      }
+    }
+    const serializer = new XMLSerializer();
+    return { xml: serializer.serializeToString(doc), changes };
+  }
+
   if (!xmlText || !slideNumberToPackageId || !Object.keys(slideNumberToPackageId).length) {
     return { xml: xmlText, changes: 0 };
   }
@@ -857,6 +876,81 @@ export function buildRowLookups(rows) {
     if (vid && vid.toLowerCase() !== 'new') byId[vid] = row;
   }
   return byId;
+}
+
+function slideNumberSortKey(row) {
+  const sn = csvCellStr(row.slide_number);
+  const parsed = parseInt(sn, 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+export function buildRowsByLookupId(rows) {
+  const byId = {};
+  const sortedRows = rows
+    .filter((row) => csvCellStr(row.slide_number))
+    .sort((a, b) => slideNumberSortKey(a) - slideNumberSortKey(b));
+  for (const row of sortedRows) {
+    const keys = [];
+    const sid = csvCellStr(row.slide_id);
+    if (sid && sid.toLowerCase() !== 'new') keys.push(sid);
+    const qid = csvCellStr(row.question_id);
+    if (qid) keys.push(qid);
+    const vid = csvCellStr(row.video_id);
+    if (vid && vid.toLowerCase() !== 'new') keys.push(vid);
+    for (const key of [...new Set(keys)]) {
+      if (!byId[key]) byId[key] = [];
+      byId[key].push(row);
+    }
+  }
+  return byId;
+}
+
+export function createOccurrenceRowLookup(rowsById, rowById) {
+  const counters = {};
+  return function lookupRow(element) {
+    for (const attr of ['slide_id', 'question_id', 'video_id']) {
+      const val = csvCellStr(element.getAttribute(attr));
+      if (!val) continue;
+      const rowsList = rowsById[val];
+      if (rowsList?.length) {
+        const occ = counters[val] || 0;
+        if (occ < rowsList.length) {
+          counters[val] = occ + 1;
+          return rowsList[occ];
+        }
+        continue;
+      }
+      if (rowById[val]) return rowById[val];
+    }
+    return null;
+  };
+}
+
+export function iterSlidesDocumentOrder(root) {
+  const slides = [];
+  for (const element of root.children) {
+    if (element.tagName === 'metasession_title') continue;
+    if (element.tagName === 'slide') {
+      if (!element.getAttribute('slide_number')) continue;
+      slides.push(element);
+    } else if (element.tagName === 'section') {
+      for (const sub of element.children) {
+        if (sub.tagName === 'slide') slides.push(sub);
+      }
+    } else if (element.tagName === 'section_group') {
+      for (const child of element.children) {
+        if (child.tagName === 'section_group_title') continue;
+        if (child.tagName === 'section') {
+          for (const sub of child.children) {
+            if (sub.tagName === 'slide') slides.push(sub);
+          }
+        } else if (child.tagName === 'slide') {
+          slides.push(child);
+        }
+      }
+    }
+  }
+  return slides;
 }
 
 export function resolveSlideId(row) {

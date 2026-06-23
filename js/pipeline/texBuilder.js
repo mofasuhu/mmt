@@ -6,6 +6,8 @@ import {
   findCsvForMetasession,
   loadSessionRows,
   buildRowLookups,
+  buildRowsByLookupId,
+  createOccurrenceRowLookup,
   getNumeralsFromRows,
   resolveSlideId,
   texTypeFromRow,
@@ -32,10 +34,12 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
   const csvPath = await findCsvForMetasession(metasessionId, vfs, 'csvs');
 
   let csvRows = [];
-  let rowById = {};
+  let lookupRow = () => null;
   if (csvPath) {
     csvRows = await loadSessionRows(vfs, csvPath);
-    rowById = buildRowLookups(csvRows);
+    const rowById = buildRowLookups(csvRows);
+    const rowsById = buildRowsByLookupId(csvRows);
+    lookupRow = createOccurrenceRowLookup(rowsById, rowById);
   }
 
   const metaAttrs = root.attributes;
@@ -84,16 +88,6 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
   }
 
   texParts.push('');
-
-  function lookupRow(element) {
-    const sid = csvCellStr(element.getAttribute('slide_id'));
-    if (sid && rowById[sid]) return rowById[sid];
-    const qid = csvCellStr(element.getAttribute('question_id'));
-    if (qid && rowById[qid]) return rowById[qid];
-    const vid = csvCellStr(element.getAttribute('video_id'));
-    if (vid && rowById[vid]) return rowById[vid];
-    return null;
-  }
 
   function formatSlide(element) {
     const row = lookupRow(element);

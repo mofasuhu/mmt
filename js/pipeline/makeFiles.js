@@ -384,7 +384,11 @@ export async function runMakeFiles(ctx) {
     const sessionXmlPath = `${sessionFolderPath}/${baseFilename}.xml`;
     if (await vfs.exists(xmlLookupPath)) {
       let xmlText = await vfs.readText(xmlLookupPath);
-      const { xml: patchedXml, changes } = patchPackageXmlSlideIds(xmlText, slideNumberToPackageId);
+      const { xml: patchedXml, changes } = patchPackageXmlSlideIds(
+        xmlText,
+        slideNumberToPackageId,
+        packagePlan,
+      );
       await vfs.writeText(sessionXmlPath, patchedXml);
       if (changes) {
         log(`   └── 📄 Patched ${changes} slide_id(s) in package XML for duplicate slides`);
