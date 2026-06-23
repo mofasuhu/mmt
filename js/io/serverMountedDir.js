@@ -10,17 +10,25 @@ export class ServerMountedDir {
   /**
    * @param {'cls'|'slides'} mountName
    * @param {string} label
+   * @param {string} [apiBase] - optional origin for /fs API (e.g. CORS worker /archive route)
    */
-  constructor(mountName, label) {
+  constructor(mountName, label, apiBase = '') {
     this.mountName = mountName;
     this.label = label;
+    this.apiBase = String(apiBase || '').replace(/\/$/, '');
     this.readOnly = true;
+  }
+
+  _fsPrefix() {
+    return this.apiBase
+      ? `${this.apiBase}/fs/${this.mountName}`
+      : `/fs/${this.mountName}`;
   }
 
   async _fetchJson(action, relPath = '') {
     const path = normalizePath(relPath);
     const q = path ? `?path=${encodeURIComponent(path)}` : '';
-    const res = await fetch(`/fs/${this.mountName}/${action}${q}`);
+    const res = await fetch(`${this._fsPrefix()}/${action}${q}`);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(text || `FS ${action} failed (${res.status})`);
@@ -50,7 +58,7 @@ export class ServerMountedDir {
   async readBytes(relPath) {
     const path = normalizePath(relPath);
     const q = path ? `?path=${encodeURIComponent(path)}` : '';
-    const res = await fetch(`/fs/${this.mountName}/read${q}`);
+    const res = await fetch(`${this._fsPrefix()}/read${q}`);
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(text || `FS read failed (${res.status})`);

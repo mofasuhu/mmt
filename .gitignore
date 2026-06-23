@@ -1,4 +1,4 @@
-# --- Google OAuth (never commit) ---
+# --- Google OAuth (local / team machines only — never commit) ---
 credentials.json
 token.json
 token_read.json

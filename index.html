@@ -10,7 +10,7 @@
 <body>
   <header class="app-header">
     <h1>Metasession Markup Tool</h1>
-    <p class="subtitle">Open this page in Chrome or Edge — sign in with Google, add your slides URL, pick folders, run the pipeline, then download results. No install required.</p>
+    <p class="subtitle">Open in Chrome or Edge — paste a Slides URL, run the pipeline, then download results. With the dev server, CLS and slides archives load automatically.</p>
   </header>
 
   <main class="layout">
@@ -32,15 +32,15 @@
 
       <div class="auth-block">
         <h3>Google account</h3>
-        <p class="auth-hint">Sign in to access Google Drive (download slides) and Sheets (step 6).</p>
+        <p class="auth-hint">Drive (slide download) and Sheets (step 6). With shared tokens deployed, no sign-in is required.</p>
         <small id="auth-status">Checking…</small>
         <div class="btn-row auth-buttons">
           <button type="button" id="sign-in-google" class="primary">Sign in with Google</button>
           <button type="button" id="verify-auth" class="secondary">Verify access</button>
         </div>
         <details class="auth-local-details">
-          <summary>Local dev: static token files</summary>
-          <p class="auth-hint">Optional — place next to <code>index.html</code> when running locally:</p>
+          <summary>Admin: static token files</summary>
+          <p class="auth-hint">Place next to <code>index.html</code> (local dev or committed for shared team auth on GitHub Pages):</p>
           <ul class="auth-files">
             <li><code>credentials.json</code></li>
             <li><code>token.json</code> — Drive</li>
@@ -117,9 +117,9 @@
   </main>
 
   <footer class="app-footer">
-    <p>Chrome or Edge recommended. On the published site: sign in with Google, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
+    <p>Chrome or Edge recommended. With shared tokens deployed, no Google sign-in is needed. Otherwise sign in, paste a Slides URL, pick archive folders, run pipeline, then Download ZIP.</p>
   </footer>
 
-  <script type="module" src="js/main.js?v=39"></script>
+  <script type="module" src="js/main.js?v=46"></script>
 </body>
 </html>

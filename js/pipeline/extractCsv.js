@@ -460,6 +460,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         if (standardizedTitle) finalSectionTitle = standardizedTitle;
       }
 
+      if (isRecap || isRecapTitle(finalSectionTitle)) {
+        isRootTail = true;
+      }
+
       let rowSectionId = (slideData.section_id || '').trim() || procSectionId;
       if (isThankYou || isRootTail) rowSectionId = '';
 

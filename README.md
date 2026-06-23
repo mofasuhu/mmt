@@ -145,13 +145,24 @@ cp links.csv.example links.csv
 | `assets/fonts/Rubik-Bold.ttf` | Video slide title text |
 | `assets/video_play_icon.png` | Play button on video slides |
 
-### Archive folders (local only — not in git)
+### Archive folders
 
-At run time, pick or drag:
+**Team default paths** are in `archive-config.json` (committed):
 
-- **CLS archive** — Nagwa `CLS` template tree
-- **Slides archive** — e.g. `2024-2025-Slides/All` style remote slide store
-- **Output folder** — writable folder for final files (**Browse**, not read-only drop)
+```json
+{
+  "cls_source_path": "/Users/user/GenMark/CLS",
+  "remote_base_path": "/Users/user/GenMark/2024-2025-Slides/All",
+  "auto_mount": true,
+  "fs_api_base": ""
+}
+```
+
+When you run **`node proxy/dev-server.mjs`** and open **http://127.0.0.1:8788**, CLS and slides archives mount automatically — no drag-and-drop needed (if those folders exist on your Mac).
+
+On **GitHub Pages** alone, the browser cannot read local disk paths. Use the dev server locally, or set `fs_api_base` to a team file API (see [§6](#6-run-the-app-locally-developers)).
+
+- **Output folder** — still pick via **Browse** or drag (writable), or use **Download ZIP**
 
 ---
 
@@ -160,9 +171,9 @@ At run time, pick or drag:
 If the site is deployed to GitHub Pages (e.g. `https://farouknagwa.github.io/mmt/`):
 
 1. Open the URL in **Chrome or Edge**
-2. Click **Sign in with Google** (grants Drive + Sheets access in your browser)
+2. Sign in with Google **or** use shared tokens if the admin deployed them ([§5.5](#55-optional-shared-google-tokens-no-per-user-sign-in))
 3. Paste your **Google Slides URL** and click **Use this URL** (or drag `links.csv`)
-4. **Browse** or drag: **CLS archive**, **Slides archive**, and optionally **Output folder**
+4. **CLS + slides archives:** pick folders manually on GitHub Pages, **or** use `node proxy/dev-server.mjs` locally for automatic paths ([§6](#6-run-the-app-locally-developers))
 5. Click **Run pipeline**
 6. Click **Download ZIP** (or **Write to folder** if you picked a writable output folder)
 
@@ -231,6 +242,35 @@ After a successful run, the site is at **https://farouknagwa.github.io/mmt/** (a
 
 Send **https://farouknagwa.github.io/mmt/** to your team — no clone or install needed.
 
+### 5.5 Optional: shared Google tokens (no per-user sign-in)
+
+If you trust everyone who can open the site and want visitors to **skip Google sign-in** (including after refresh), commit your OAuth token files beside `index.html` so GitHub Pages serves them:
+
+| File | Purpose |
+|------|---------|
+| `credentials.json` | OAuth client (optional if tokens already include `client_id` / `client_secret`) |
+| `token.json` | Drive access |
+| `token_read.json` | Drive fallback (optional) |
+| `token_sheet.json` | Sheets access (step 6) |
+
+Copy the same files you use locally with the Python tool (`Scripts/` or next to `index.html` for dev). After push + Pages deploy, the app loads them on every page load, refreshes expired access tokens **via the CORS proxy** (`oauth2.googleapis.com` must be allowed — included in `proxy/worker.js`; redeploy with `cd proxy && npx wrangler deploy`), and connects automatically.
+
+On localhost, use `node proxy/dev-server.mjs` (not `npx serve`) so token refresh can use the same-origin `/proxy` route.
+
+```bash
+git add credentials.json token.json token_read.json token_sheet.json
+git commit -m "Deploy shared Google tokens for team auth"
+git push
+```
+
+**Risks you are accepting:**
+
+- Anyone with the site URL can use **your** Google Drive/Sheets access (same as you)
+- Tokens in a public repo can be copied; rotate in [Google Account → Security](https://myaccount.google.com/permissions) if leaked
+- GitHub may block the push with secret scanning — use a **private** repo, or allow the secret when prompted
+
+If these files are **not** in the repo, users sign in with their own Google account via the button (browser token is lost on refresh unless they sign in again).
+
 ---
 
 ## 6. Run the app locally (developers)
@@ -243,7 +283,23 @@ node proxy/dev-server.mjs
 
 Open **http://127.0.0.1:8788**
 
-This serves the app and a same-origin `/proxy` for Nagwa APIs if the browser blocks direct fetch.
+This serves the app, a same-origin `/proxy` for Nagwa APIs, and **`/fs/`** for CLS + slides archives at the paths in `archive-config.json`. When `auto_mount` is true and the folders exist, the CLS and slides pickers are hidden — no drag-and-drop needed.
+
+Edit `archive-config.json` if your GenMark paths differ from the team default.
+
+### Optional: auto-mount on GitHub Pages via file API
+
+Static GitHub Pages cannot read `/Users/...` on each PC. To auto-mount on the published URL, expose a machine that has the archives (e.g. dev server + [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)), then:
+
+1. Set worker env `ARCHIVE_FS_ORIGIN` to that tunnel URL (e.g. `https://mmt-files.your-tunnel.trycloudflare.com`)
+2. Redeploy: `cd proxy && npx wrangler deploy`
+3. In `archive-config.json`:
+
+```json
+"fs_api_base": "https://mmt-cors-proxy.your-name.workers.dev/archive"
+```
+
+All users hitting GitHub Pages then read archives from that server (not from each laptop's disk).
 
 ### Alternative: static server
 
@@ -328,10 +384,10 @@ links.csv.example       # Template for session URLs
 
 ## 11. Security
 
-- Keep the repository **private** if it contains or ever contained OAuth secrets
-- Never commit `credentials.json` or token JSON files
+- **Default (browser sign-in):** only `client_id` in `oauth-config.json` is public; never commit `client_secret` unless you deliberately deploy shared tokens ([§5.5](#55-optional-shared-google-tokens-no-per-user-sign-in))
+- **Shared tokens on Pages:** all visitors act as your Google account — use only with a trusted team; prefer a **private** repo
+- Rotate tokens in Google Cloud Console if they were exposed or copied
 - API keys are embedded like the Python tool; use the CORS proxy only for hosts you trust
-- Rotate tokens if they were accidentally pushed (revoke in Google Cloud Console, regenerate locally)
 
 ---
 
@@ -342,7 +398,7 @@ links.csv.example       # Template for session URLs
 | `Get Pages site failed` / `Not Found` in Actions | **Settings → Pages → Source → GitHub Actions**, then re-run workflow ([§5.3](#53-enable-github-pages-required--do-this-before-the-workflow-can-succeed)) |
 | Node.js 20 deprecation warning in Actions | Harmless until mid-2026; workflow uses `deploy-pages@v5` (Node 24) |
 | `Failed to fetch` on metasession API | Use `node proxy/dev-server.mjs`, clear CORS proxy URL, hard-refresh |
-| Google auth fails | Check files beside `index.html`; click **Verify Google auth** |
+| Google auth fails | Restart `node proxy/dev-server.mjs` after updates; hard-refresh. Shared tokens refresh via `/proxy` → `oauth2.googleapis.com`. On Pages, redeploy `proxy/worker.js`. |
 | Output folder read-only | Use **Browse** for output, not drag-only |
 | No files on disk after run | Click **Write to folder** or **Download ZIP** — pipeline stores in browser memory |
 | Step 10 rename skipped | Re-run from step 5; ensure CSV exists in `files/{session_id}/` |

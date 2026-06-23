@@ -1,5 +1,5 @@
 /**
- * Google OAuth — browser sign-in (GitHub Pages) or static token files (local dev).
+ * Google OAuth — browser sign-in (GitHub Pages) or static token files (local / shared team).
  */
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
@@ -69,7 +69,7 @@ function loadGisScript() {
   return gisScriptPromise;
 }
 
-async function refreshTokenBundle(bundle, log = console.log) {
+async function refreshTokenBundle(bundle, log = console.log, corsProxyUrl = '') {
   if (!bundle?.refresh_token) {
     throw new Error('Token expired and no refresh_token available.');
   }
@@ -79,7 +79,8 @@ async function refreshTokenBundle(bundle, log = console.log) {
     throw new Error('Token bundle missing client_id/client_secret for refresh.');
   }
 
-  log('   [OAuth] Refreshing access token...');
+  const refreshUrl = resolveTokenRefreshUrl(corsProxyUrl);
+  log(`   [OAuth] Refreshing access token${refreshUrl !== GOOGLE_TOKEN_URL ? ' (via proxy)' : ''}...`);
   const body = new URLSearchParams({
     client_id: clientId,
     client_secret: clientSecret,
@@ -87,7 +88,7 @@ async function refreshTokenBundle(bundle, log = console.log) {
     grant_type: 'refresh_token',
   });
 
-  const response = await fetch('https://oauth2.googleapis.com/token', {
+  const response = await fetch(refreshUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
@@ -104,12 +105,34 @@ async function refreshTokenBundle(bundle, log = console.log) {
   return bundle.token;
 }
 
-async function resolveAccessToken(bundle, log) {
+async function resolveAccessToken(bundle, log, corsProxyUrl = '') {
   if (!bundle) return null;
   let token = accessTokenFromBundle(bundle);
   if (token && !isBundleExpired(bundle)) return token;
   if (!bundle.refresh_token) return token;
-  return refreshTokenBundle(bundle, log);
+  return refreshTokenBundle(bundle, log, corsProxyUrl);
+}
+
+function enrichTokenBundle(bundle, clientId, clientSecret) {
+  if (!bundle) return;
+  if (!bundle.client_id && clientId) bundle.client_id = clientId;
+  if (!bundle.client_secret && clientSecret) bundle.client_secret = clientSecret;
+}
+
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+
+function resolveTokenRefreshUrl(corsProxyUrl = '') {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === '127.0.0.1' || host === 'localhost') {
+      return `${window.location.origin}/proxy?url=${encodeURIComponent(GOOGLE_TOKEN_URL)}`;
+    }
+  }
+  const proxy = String(corsProxyUrl || '').trim().replace(/\/$/, '');
+  if (proxy) {
+    return `${proxy}?url=${encodeURIComponent(GOOGLE_TOKEN_URL)}`;
+  }
+  return GOOGLE_TOKEN_URL;
 }
 
 export class GoogleAuth {
@@ -185,6 +208,10 @@ export class GoogleAuth {
     staticTokenBundles.driveRead = await fetchJsonOptional(STATIC_AUTH_FILES.driveTokenRead);
     staticTokenBundles.sheets = await fetchJsonOptional(STATIC_AUTH_FILES.sheetsToken);
 
+    for (const bundle of Object.values(staticTokenBundles)) {
+      enrichTokenBundle(bundle, this.clientId, this.clientSecret);
+    }
+
     if (staticTokenBundles.drive) {
       log(`Loaded Drive token from ${STATIC_AUTH_FILES.driveToken}`);
     }
@@ -208,6 +235,10 @@ export class GoogleAuth {
 
   get browserSignInAvailable() {
     return Boolean(this.oauthClientId);
+  }
+
+  get prefersSharedTokens() {
+    return this.staticAuthReady;
   }
 
   get isAuthenticated() {
@@ -273,7 +304,7 @@ export class GoogleAuth {
     const fallback = staticTokenBundles.driveRead;
 
     try {
-      const token = await resolveAccessToken(primary, log);
+      const token = await resolveAccessToken(primary, log, this.corsProxyUrl);
       if (token) return token;
     } catch (e) {
       log(`Drive token refresh failed (${STATIC_AUTH_FILES.driveToken}): ${e.message}`);
@@ -281,7 +312,7 @@ export class GoogleAuth {
 
     if (fallback) {
       log(`Trying Drive fallback ${STATIC_AUTH_FILES.driveTokenRead}...`);
-      return resolveAccessToken(fallback, log);
+      return resolveAccessToken(fallback, log, this.corsProxyUrl);
     }
 
     return null;
@@ -290,7 +321,7 @@ export class GoogleAuth {
   async getStaticSheetsAccessToken(log = console.log) {
     const bundle = staticTokenBundles.sheets;
     if (!bundle) return null;
-    return resolveAccessToken(bundle, log);
+    return resolveAccessToken(bundle, log, this.corsProxyUrl);
   }
 
   async getDriveAccessToken(log = console.log) {
@@ -324,14 +355,38 @@ export class GoogleAuth {
   async ensureAuthenticated(log = console.log) {
     if (this.getInteractiveTokenIfValid()) return;
 
-    const staticDrive = await this.getStaticDriveAccessToken(log).catch(() => null);
-    const staticSheets = await this.getStaticSheetsAccessToken(log).catch(() => null);
+    let staticDrive = null;
+    let staticSheets = null;
+    let staticError = '';
+
+    try {
+      staticDrive = await this.getStaticDriveAccessToken(log);
+    } catch (e) {
+      staticError = e.message;
+      log(`Drive token failed: ${e.message}`);
+    }
+
+    try {
+      staticSheets = await this.getStaticSheetsAccessToken(log);
+    } catch (e) {
+      staticError = staticError || e.message;
+      log(`Sheets token failed: ${e.message}`);
+    }
+
     if (staticDrive && staticSheets) return;
 
     if (this.browserSignInAvailable) {
       const prompt = this.interactiveToken ? '' : 'consent';
       await this.signInInteractive(log, { prompt });
       return;
+    }
+
+    if (this.staticAuthReady) {
+      throw new Error(
+        `Shared token refresh failed${staticError ? `: ${staticError}` : ''}. `
+        + 'On localhost use node proxy/dev-server.mjs (restart after update). '
+        + 'On GitHub Pages redeploy proxy/worker.js so oauth2.googleapis.com is allowed.',
+      );
     }
 
     throw new Error(

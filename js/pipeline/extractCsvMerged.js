@@ -758,6 +758,18 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         if (!slide.en_slide_title) slide.en_slide_title = currentEnSection;
       }
 
+      const isRecapAfterProp = isRecapTitle(slide.ar_slide_title || '')
+        || isRecapTitle(slide.en_slide_title || '');
+      if (isRecapAfterProp) {
+        isRootTailSlide = true;
+        currentArSection = '';
+        currentEnSection = '';
+        currentArSectionId = '';
+        currentEnSectionId = '';
+        currentSectionType = '';
+        sectionTypeUsed = true;
+      }
+
       if ((slide.ar_video_id || '').trim() || (slide.en_video_id || '').trim()) {
         applyVideoSlideTitles(slide);
       }

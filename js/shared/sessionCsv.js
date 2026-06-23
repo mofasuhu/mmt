@@ -3,8 +3,24 @@
 const EMPTY_VALUES = new Set(['', 'nan', 'none', 'nat']);
 const TWELVE_DIGIT_ID_RE = /^\d{12}(\.\d+)?$/;
 const SECTION_ID_RE = /^\d{12}$/;
-const TASHKEEL_RE = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/;
-const RECAP_TITLES = new Set(['recap', 'ملخص']);
+const TASHKEEL_RE = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g;
+const RECAP_TITLES = new Set([
+  'recap',
+  'ملخص',
+  // French
+  'récap',
+  'récapitulatif',
+  'recapitulatif',
+  // Spanish
+  'resumen',
+  'recapitulación',
+  'recapitulacion',
+  // Italian
+  'riepilogo',
+  // German
+  'zusammenfassung',
+  'rekapitulation',
+]);
 
 export const TOC_TITLE_BY_LANGUAGE = {
   ar: 'محتوى الحصة',
@@ -167,6 +183,15 @@ export function isRecapTitle(title) {
   return RECAP_TITLES.has(stripTashkeel(title).toLowerCase());
 }
 
+/** True when a CSV row is a session-level recap slide (root, not inside a section). */
+export function isRecapRow(row) {
+  if (isRecapTitle(row?.section_title || '')) return true;
+  for (const key of ['slide_title', 'ar_slide_title', 'en_slide_title']) {
+    if (isRecapTitle(row?.[key] || '')) return true;
+  }
+  return false;
+}
+
 export const SOURCE_SLIDE_ID_MARKER = '.source_slide_id';
 
 export function extractSlideNumberFromTexComment(comment, fallback) {
@@ -185,10 +210,8 @@ export async function planPackageSlideIds(slides, { fetchNewId } = {}) {
   for (let index = 0; index < slides.length; index += 1) {
     const slideTuple = slides[index];
     const sourceSlideId = csvCellStr(slideTuple[1]);
-    // Metasession slide_number follows slide order in tex/XML (1-based), not the
-    // trailing % comment which is the PPTX slide index and may repeat when a slide
-    // id is reused.
-    const slideNumber = String(index + 1);
+    const slideComment = slideTuple.length > 4 ? slideTuple[4] : '';
+    const slideNumber = extractSlideNumberFromTexComment(slideComment, String(index + 1));
 
     const occurrence = seenCounts[sourceSlideId] || 0;
     let packageSlideId = sourceSlideId;
@@ -291,7 +314,7 @@ export function rowUsesApiSectionTitle(row) {
   if (csvCellStr(row.question_id)) return false;
   if (isVideoCsvRow(row)) return false;
   if (isThankYouRow(row)) return false;
-  if (isRecapTitle(row.section_title || '')) return false;
+  if (isRecapRow(row)) return false;
   return !sectionTitleReservedForRole(row.section_title || '');
 }
 
@@ -598,6 +621,42 @@ export function normalizeMetasessionId(raw) {
   }
   const match = s.match(/^(\d{12})/);
   return match ? match[1] : null;
+}
+
+export function normalizeSlideIdForFolder(raw) {
+  const s = csvCellStr(raw);
+  if (!s || s.toLowerCase() === 'new') return null;
+  const compact = s.replace(/\s+/g, '');
+  const match = compact.match(/^(\d{12})(?:\.(\d+))?$/);
+  if (match) {
+    const [, base, suffix] = match;
+    if (!suffix || Number.parseInt(suffix, 10) === 0) return base;
+    return `${base}.${Number.parseInt(suffix, 10)}`;
+  }
+  const value = Number(s);
+  if (Number.isFinite(value) && Number.isInteger(value)) {
+    const normalized = String(Math.trunc(value));
+    return /^\d{12}$/.test(normalized) ? normalized : null;
+  }
+  return null;
+}
+
+export function matchSlideFolder(rawSlideId, folderNames) {
+  const slideId = normalizeSlideIdForFolder(rawSlideId);
+  if (!slideId) return null;
+
+  const folders = folderNames.map((name) => csvCellStr(name));
+  if (folders.includes(slideId)) return slideId;
+
+  if (!slideId.includes('.')) {
+    const escaped = slideId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const multipartMatches = folders
+      .filter((name) => new RegExp(`^${escaped}\\.\\d+$`).test(name))
+      .sort();
+    if (multipartMatches.length) return multipartMatches[0];
+  }
+
+  return null;
 }
 
 export function normalizeSectionType(raw, defaultVal = 'regular') {

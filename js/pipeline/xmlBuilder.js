@@ -12,6 +12,7 @@ import {
   xmlQuestionPlacement,
   loadSessionRows,
   writeSessionRows,
+  isRecapTitle,
   processQuestionIdsFromApi,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
@@ -622,12 +623,9 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   const initialSlides = sessionRowsProcessed.slice(0, 2);
   let remaining = sessionRowsProcessed.slice(2);
 
-  const recapKeywords = ['recap', 'ملخص'];
+  let recapSlides = remaining.filter((r) => isRecapTitle(String(r.section_title ?? '')));
   const wellDoneKeywords = ['well done', 'well done!', 'عمل رائع', 'عمل رائع!'];
 
-  let recapSlides = remaining.filter((r) =>
-    recapKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
-  );
   let wellDoneSlides = remaining.filter((r) =>
     wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
   );
@@ -652,7 +650,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
   const mainContent = remaining.filter(
     (r) =>
-      !recapKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()) &&
+      !isRecapTitle(String(r.section_title ?? '')) &&
       !wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
   );
 
@@ -701,6 +699,24 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
     const sectionTitle = csvCellStr(row.section_title);
     const sectionGp = csvCellStr(row.section_gp);
+
+    if (isRecapTitle(sectionTitle)) {
+      let recapSlideId = await getSlideId(row.slide_id, fetchFn);
+      if (String(row.slide_id ?? '').trim().toLowerCase() === 'new' && recapSlideId && rowIndex >= 0) {
+        sessionRowsProcessed[rowIndex].slide_id = recapSlideId;
+      }
+      if (recapSlideId) {
+        metasession.appendChild(
+          createEl(doc, 'slide', {
+            slide_id: recapSlideId,
+            slide_number: '0',
+            slide_type: 'instructional',
+            slide_title: sectionTitle.trim() || 'Recap',
+          }),
+        );
+      }
+      continue;
+    }
 
     if (activeGroupName && pendingGroupEnds[idx]) {
       currentSectionGroupElement = null;

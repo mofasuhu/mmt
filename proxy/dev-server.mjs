@@ -22,7 +22,7 @@ const PORT = Number(process.env.MMT_DEV_PORT || 8788);
 const HOST = process.env.MMT_DEV_HOST || '127.0.0.1';
 
 const ALLOWED_HOSTS = new Set(
-  (process.env.ALLOWED_HOSTS || 'admin.classes.nagwa.com,qms-api.nagwa.com,12digit.nagwa.com')
+  (process.env.ALLOWED_HOSTS || 'admin.classes.nagwa.com,qms-api.nagwa.com,12digit.nagwa.com,oauth2.googleapis.com')
     .split(',')
     .map((h) => h.trim())
     .filter(Boolean),

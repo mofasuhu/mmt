@@ -4,7 +4,14 @@
 
 import { ID_URL } from '../shared/constants.js';
 import { getRawMetasessionData } from '../shared/metasessionApi.js';
-import { loadSessionRows, normalizeMetasessionId } from '../shared/sessionCsv.js';
+import {
+  csvCellStr,
+  isTwelveDigitId,
+  loadSessionRows,
+  matchSlideFolder,
+  normalizeMetasessionId,
+  normalizeSlideIdForFolder,
+} from '../shared/sessionCsv.js';
 
 /**
  * @param {object} ctx
@@ -75,14 +82,7 @@ async function findCsvForSession(vfs, dir, sessionId) {
  * @returns {string | null}
  */
 function normalizeSlideIdFromCsv(slideIdRaw) {
-  if (slideIdRaw == null || slideIdRaw === '') return null;
-  const s = String(slideIdRaw).trim().toLowerCase();
-  if (!s || s === 'new') return null;
-  try {
-    return String(parseInt(Number(slideIdRaw), 10));
-  } catch {
-    return null;
-  }
+  return normalizeSlideIdForFolder(slideIdRaw);
 }
 
 /**
@@ -91,24 +91,7 @@ function normalizeSlideIdFromCsv(slideIdRaw) {
  * @returns {string | null}
  */
 function slideIdToFolder(slideIdRaw, availableFolders) {
-  const slideId = normalizeSlideIdFromCsv(slideIdRaw);
-  if (!slideId) return null;
-  if (availableFolders.includes(slideId)) return slideId;
-
-  const digitFolders = availableFolders.filter((f) => /^\d+$/.test(f));
-  if (!digitFolders.length) return null;
-
-  const target = Number(slideId);
-  let best = digitFolders[0];
-  let bestDiff = Math.abs(Number(best) - target);
-  for (const f of digitFolders.slice(1)) {
-    const diff = Math.abs(Number(f) - target);
-    if (diff < bestDiff) {
-      best = f;
-      bestDiff = diff;
-    }
-  }
-  return best;
+  return matchSlideFolder(slideIdRaw, availableFolders);
 }
 
 /**
@@ -232,7 +215,7 @@ function parseVerbatimNumber(raw) {
 
 /**
  * @param {Record<string, string>[]} rows
- * @returns {Array<Array<[string, string]>>}
+ * @returns {Array<Array<[string, string, number, string]>>}
  */
 function multipartRunsByVerbatimNumber(rows) {
   const runs = [];
@@ -241,10 +224,18 @@ function multipartRunsByVerbatimNumber(rows) {
 
   for (const row of rows) {
     const text = extractVerbatimText(row.verbatim_multipart);
-    if (!text) continue;
-
     const num = parseVerbatimNumber(row.verbatim_number);
+    if (!text) {
+      if (num != null && currentRun.length) {
+        runs.push(currentRun);
+        currentRun = [];
+        expectedNext = null;
+      }
+      continue;
+    }
+
     const slideId = normalizeSlideIdFromCsv(row.slide_id);
+    const slideNumber = csvCellStr(row.slide_number) || '?';
 
     if (!slideId) {
       if (currentRun.length) runs.push(currentRun);
@@ -262,15 +253,15 @@ function multipartRunsByVerbatimNumber(rows) {
 
     if (num === 1) {
       if (currentRun.length) runs.push(currentRun);
-      currentRun = [[slideId, text]];
+      currentRun = [[slideId, text, num, slideNumber]];
       expectedNext = 2;
     } else if (expectedNext != null && num === expectedNext) {
-      currentRun.push([slideId, text]);
+      currentRun.push([slideId, text, num, slideNumber]);
       expectedNext = num + 1;
     } else {
       if (currentRun.length) runs.push(currentRun);
       if (num === 1) {
-        currentRun = [[slideId, text]];
+        currentRun = [[slideId, text, num, slideNumber]];
         expectedNext = 2;
       } else {
         currentRun = [];
@@ -284,6 +275,72 @@ function multipartRunsByVerbatimNumber(rows) {
 }
 
 /**
+ * @param {string} filename
+ * @param {string} oldId
+ * @param {string} newId
+ * @returns {string}
+ */
+function remapSlideAssetName(filename, oldId, newId) {
+  if (filename.startsWith(oldId)) return `${newId}${filename.slice(oldId.length)}`;
+  return filename;
+}
+
+/**
+ * Move all assets from oldId/ into newId/, renaming files prefixed with oldId.
+ * @param {object} ctx
+ * @param {string} sessionFolder
+ * @param {string} oldId
+ * @param {string} newId
+ * @returns {Promise<boolean>}
+ */
+async function mergeSlideFolder(ctx, sessionFolder, oldId, newId) {
+  const { vfs } = ctx;
+  const oldFolder = `${sessionFolder}/${oldId}`;
+  if (!(await vfs.isDir(oldFolder))) return false;
+
+  const newFolder = `${sessionFolder}/${newId}`;
+  await vfs.mkdir(newFolder, { recursive: true });
+
+  let movedAny = false;
+  const names = (await vfs.listDir(oldFolder)).filter((n) => !n.startsWith('.'));
+  for (const name of names.sort()) {
+    const srcPath = `${oldFolder}/${name}`;
+    const destName = remapSlideAssetName(name, oldId, newId);
+    const destPath = `${newFolder}/${destName}`;
+
+    if (await vfs.isDir(srcPath)) {
+      if (await vfs.exists(destPath)) {
+        await vfs.remove(destPath, { recursive: true });
+      }
+      await vfs.rename(srcPath, destPath);
+      movedAny = true;
+      continue;
+    }
+
+    if (await vfs.isFile(srcPath)) {
+      if (await vfs.exists(destPath)) {
+        await vfs.remove(destPath);
+      }
+      await vfs.rename(srcPath, destPath);
+      movedAny = true;
+    }
+  }
+
+  try {
+    const remaining = await vfs.listDir(oldFolder);
+    if (!remaining.length) {
+      await vfs.remove(oldFolder);
+    } else {
+      await vfs.remove(oldFolder, { recursive: true });
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return movedAny;
+}
+
+/**
  * @param {object} ctx
  * @param {string} sessionFolder
  * @param {Record<string, string>} oldToNew
@@ -293,26 +350,8 @@ async function applyRenames(ctx, sessionFolder, oldToNew, metasessionStem) {
   const { vfs, log } = ctx;
 
   for (const [oldId, newId] of Object.entries(oldToNew)) {
-    const oldFolder = `${sessionFolder}/${oldId}`;
-    const newFolder = `${sessionFolder}/${newId}`;
-    if (!(await vfs.isDir(oldFolder))) continue;
-
-    const oldTex = `${oldFolder}/${oldId}.tex`;
-    if (!(await vfs.isFile(oldTex))) continue;
-
-    try {
-      await vfs.mkdir(newFolder, { recursive: true });
-      const newTex = `${newFolder}/${newId}.tex`;
-      await vfs.rename(oldTex, newTex);
-      try {
-        const remaining = await vfs.listDir(oldFolder);
-        if (!remaining.length) await vfs.remove(oldFolder);
-      } catch {
-        /* folder may not be empty */
-      }
+    if (await mergeSlideFolder(ctx, sessionFolder, oldId, newId)) {
       log(`↷ ${oldId} → ${newId}`);
-    } catch (e) {
-      log(`⚠ Could not rename ${oldId} → ${newId}: ${e.message}`);
     }
   }
 
@@ -375,28 +414,29 @@ async function processSession(ctx, sessionFolder, csvPath) {
 
   const slideFolders = [];
   for (const name of await vfs.listDir(sessionFolder)) {
-    if ((await vfs.isDir(`${sessionFolder}/${name}`)) && /^\d+$/.test(name)) {
+    if ((await vfs.isDir(`${sessionFolder}/${name}`)) && isTwelveDigitId(name)) {
       slideFolders.push(name);
     }
   }
 
   const metasessionStem = `${sessionFolder.split('/').pop()}_metasession`;
-  /** @type {Array<[string, string]>} */
+  /** @type {Array<[string, string, string]>} */
   const verbatimSlides = [];
-  /** @type {Array<[string, string]>} */
+  /** @type {Array<[string, string, string]>} */
   const listeningSlides = [];
 
   for (const row of rows) {
     const oldSlideId = slideIdToFolder(row.slide_id, slideFolders);
     if (!oldSlideId) continue;
+    const slideNumber = csvCellStr(row.slide_number) || '?';
 
     if ('verbatim' in row) {
       const vt = extractVerbatimText(row.verbatim);
-      if (vt) verbatimSlides.push([oldSlideId, vt]);
+      if (vt) verbatimSlides.push([oldSlideId, vt, slideNumber]);
     }
     if ('verbatim_listening' in row) {
       const vl = extractVerbatimText(row.verbatim_listening);
-      if (vl) listeningSlides.push([oldSlideId, vl]);
+      if (vl) listeningSlides.push([oldSlideId, vl, slideNumber]);
     }
   }
 
@@ -430,9 +470,9 @@ async function processSession(ctx, sessionFolder, csvPath) {
     }
     /** @type {Record<string, string>} */
     const runOldToNew = {};
-    run.forEach(([oldId], i) => {
+    run.forEach(([oldId, _text, partNumber]) => {
       const currentName = resolveCurrentName(oldId, oldToNew);
-      const newId = `${baseId}.${i + 1}`;
+      const newId = `${baseId}.${partNumber}`;
       runOldToNew[currentName] = newId;
       oldToNew[oldId] = newId;
     });
@@ -441,32 +481,35 @@ async function processSession(ctx, sessionFolder, csvPath) {
 
   let updated = 0;
 
-  for (const [oldSlideId, text] of listeningSlides) {
+  for (const [oldSlideId, text, slideNumber] of listeningSlides) {
     const current = resolveCurrentName(oldSlideId, oldToNew);
     const slideFolderPath = `${sessionFolder}/${current}`;
     if (await vfs.isDir(slideFolderPath)) {
       if (await writeListeningFile(vfs, slideFolderPath, current, text, log)) {
+        log(`  slide ${slideNumber} → ${current} (verbatim_listening)`);
         updated += 1;
       }
     }
   }
 
-  for (const [oldSlideId, verbatimText] of verbatimSlides) {
+  for (const [oldSlideId, verbatimText, slideNumber] of verbatimSlides) {
     const current = resolveCurrentName(oldSlideId, oldToNew);
     const texPath = `${sessionFolder}/${current}/${current}.tex`;
     if (await vfs.isFile(texPath)) {
       if (await injectVerbatimIntoSlide(vfs, texPath, verbatimText, `${current}.tex`, log)) {
+        log(`  slide ${slideNumber} → ${current} (verbatim)`);
         updated += 1;
       }
     }
   }
 
   for (const run of multipartRuns) {
-    for (const [oldSlideId, verbatimText] of run) {
+    for (const [oldSlideId, verbatimText, _partNumber, slideNumber] of run) {
       const current = resolveCurrentName(oldSlideId, oldToNew);
       const texPath = `${sessionFolder}/${current}/${current}.tex`;
       if (await vfs.isFile(texPath)) {
         if (await injectVerbatimIntoSlide(vfs, texPath, verbatimText, `${current}.tex`, log)) {
+          log(`  slide ${slideNumber} → ${current} (verbatim_multipart)`);
           updated += 1;
         }
       }
@@ -507,13 +550,18 @@ export async function runAddVerbatimToSlides(ctx) {
     if (!sessionId) continue;
 
     let csvPath = await findCsvForSession(vfs, path, sessionId);
-    if (!csvPath) csvPath = await findCsvForSession(vfs, csvsDir, sessionId);
+    let csvSource = 'package';
+    if (!csvPath) {
+      csvPath = await findCsvForSession(vfs, csvsDir, sessionId);
+      csvSource = 'csvs';
+    }
     if (!csvPath) {
       log(`⊘ ${item}: no CSV found`);
       continue;
     }
 
     log(`\n📁 ${item}`);
+    log(`  CSV source: ${csvSource} (${csvPath.split('/').pop()})`);
     const n = await processSession(ctx, path, csvPath);
     totalUpdated += n;
     if (n === 0) log('(no updates)');

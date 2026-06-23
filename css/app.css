@@ -357,6 +357,14 @@ code {
   color: var(--text);
 }
 
+.auth-block--shared .auth-buttons {
+  display: none;
+}
+
+.auth-block--shared .auth-local-details {
+  display: none;
+}
+
 .auth-local-details[open] summary {
   margin-bottom: 0.5rem;
 }

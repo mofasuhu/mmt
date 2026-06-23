@@ -13,7 +13,7 @@ import {
   setupDropZone,
 } from './io/fsAccess.js';
 import { ServerMountedDir } from './io/serverMountedDir.js';
-import { CLS_SOURCE_PATH, REMOTE_BASE_PATH } from './shared/archivePaths.js';
+import { loadArchiveConfig, getArchiveConfig, resolveFsApiBase, isDevServerHost } from './shared/archiveConfig.js';
 import { downloadVfsAsZip } from './io/zipExport.js';
 import { runPipeline, PIPELINE_STEP_LABELS, LAST_PIPELINE_STEP } from './pipeline/runAll.js';
 import {
@@ -41,6 +41,7 @@ let outputDirHandle = null;
 let clsArchiveHandle = null;
 /** @type {MountedDir|import('./io/fsAccess.js').DroppedDir|null} */
 let slidesArchiveHandle = null;
+let archivesAutoMounted = false;
 
 function flushProgressToLog() {
   if (!progressEl || progressEl.hidden) return;
@@ -144,29 +145,53 @@ function setStepStatus(step, status) {
   li.querySelector('.step-status').textContent = status;
 }
 
+let staticAuthVerified = false;
+
 function updateAuthStatusUi() {
   const st = googleAuth.getAuthStatus();
   const el = $('#auth-status');
   const signInBtn = $('#sign-in-google');
+  const verifyBtn = $('#verify-auth');
+  const authBlock = $('.auth-block');
   if (!el) return;
 
   if (st.interactive) {
     el.textContent = 'Signed in with Google (browser).';
-    if (signInBtn) signInBtn.textContent = 'Sign in again';
+    if (signInBtn) {
+      signInBtn.hidden = false;
+      signInBtn.textContent = 'Sign in again';
+      signInBtn.disabled = false;
+    }
+  } else if (st.staticReady && staticAuthVerified) {
+    el.textContent = 'Google access ready (shared tokens — no sign-in needed).';
+    if (signInBtn) signInBtn.hidden = true;
   } else if (st.staticReady) {
-    const parts = [];
-    if (st.drive) parts.push('token.json');
-    if (st.driveRead) parts.push('token_read.json');
-    if (st.sheets) parts.push('token_sheet.json');
-    el.textContent = `Local tokens: ${parts.join(', ')}`;
+    el.textContent = 'Shared tokens loaded — use Verify access or sign in if refresh failed.';
+    if (signInBtn) {
+      signInBtn.hidden = !st.browserSignIn;
+      signInBtn.textContent = 'Sign in with Google';
+      signInBtn.disabled = !st.browserSignIn;
+    }
   } else if (st.browserSignIn) {
     el.textContent = 'Click “Sign in with Google” to continue.';
+    if (signInBtn) {
+      signInBtn.hidden = false;
+      signInBtn.textContent = 'Sign in with Google';
+      signInBtn.disabled = false;
+    }
   } else {
     el.textContent = 'Auth not configured — site admin must set client_id in oauth-config.json.';
+    if (signInBtn) {
+      signInBtn.hidden = false;
+      signInBtn.disabled = true;
+    }
   }
 
-  if (signInBtn) {
-    signInBtn.disabled = !st.browserSignIn;
+  if (verifyBtn) {
+    verifyBtn.hidden = Boolean(st.staticReady && staticAuthVerified);
+  }
+  if (authBlock) {
+    authBlock.classList.toggle('auth-block--shared', Boolean(st.staticReady && staticAuthVerified));
   }
 }
 
@@ -236,45 +261,58 @@ async function useSlidesUrl() {
   log('Created links.csv from pasted Google Slides URL.');
 }
 
-function isDevServerHost() {
-  return (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
-    && window.location.port === '8788';
+function setArchiveFolderUiVisible(showPickers) {
+  const clsRow = $('#cls-folder-row');
+  const slidesRow = $('#slides-folder-row');
+  if (clsRow) clsRow.hidden = !showPickers;
+  if (slidesRow) slidesRow.hidden = !showPickers;
+
+  const hint = document.querySelector('.folder-hint');
+  if (!hint) return;
+  if (!showPickers) {
+    hint.textContent = 'Output folder: drag or Browse. CLS and slides archives load automatically from configured paths.';
+  } else {
+    hint.textContent = 'Drag a folder onto a zone, or click Browse.';
+  }
 }
 
 async function mountStaticArchivesIfAvailable() {
-  if (!isDevServerHost()) return false;
+  const config = getArchiveConfig();
+  if (!config.auto_mount) return false;
+
+  const fsApiBase = resolveFsApiBase(config);
+  if (!fsApiBase && !isDevServerHost()) {
+    log(
+      'Archive auto-mount skipped on static hosting — browsers cannot read local disk paths. '
+      + 'Run node proxy/dev-server.mjs (http://127.0.0.1:8788) or set fs_api_base in archive-config.json.',
+    );
+    return false;
+  }
 
   try {
-    const res = await fetch('/fs/status');
+    const statusUrl = fsApiBase ? `${fsApiBase}/fs/status` : '/fs/status';
+    const res = await fetch(statusUrl);
     if (!res.ok) return false;
     const { mounts } = await res.json();
     if (!mounts?.cls?.ok) {
-      log(`CLS archive not found at ${CLS_SOURCE_PATH}`);
+      log(`CLS archive not found at ${config.cls_source_path}`);
       return false;
     }
     if (!mounts?.slides?.ok) {
-      log(`Slides archive not found at ${REMOTE_BASE_PATH}`);
+      log(`Slides archive not found at ${config.remote_base_path}`);
       return false;
     }
 
-    clsArchiveHandle = new ServerMountedDir('cls', CLS_SOURCE_PATH);
-    slidesArchiveHandle = new ServerMountedDir('slides', REMOTE_BASE_PATH);
+    clsArchiveHandle = new ServerMountedDir('cls', config.cls_source_path, fsApiBase);
+    slidesArchiveHandle = new ServerMountedDir('slides', config.remote_base_path, fsApiBase);
+    archivesAutoMounted = true;
     mountArchives();
     setFolderLabel('#cls-folder-name', clsArchiveHandle);
     setFolderLabel('#slides-folder-name', slidesArchiveHandle);
+    setArchiveFolderUiVisible(false);
 
-    const clsRow = $('#cls-folder-row');
-    const slidesRow = $('#slides-folder-row');
-    if (clsRow) clsRow.hidden = true;
-    if (slidesRow) slidesRow.hidden = true;
-
-    const hint = document.querySelector('.folder-hint');
-    if (hint) {
-      hint.textContent = 'Output folder: drag or Browse. CLS and slides archives load automatically from configured local paths.';
-    }
-
-    log(`CLS archive: ${CLS_SOURCE_PATH}`);
-    log(`Slides archive: ${REMOTE_BASE_PATH}`);
+    log(`CLS archive: ${config.cls_source_path}`);
+    log(`Slides archive: ${config.remote_base_path}`);
     return true;
   } catch (e) {
     log(`Static archive mount failed: ${e.message}`);
@@ -424,9 +462,11 @@ async function verifyGoogleAuth() {
   try {
     await googleAuth.connectDrive(log);
     await googleAuth.connectSheets(log);
+    staticAuthVerified = googleAuth.prefersSharedTokens || Boolean(googleAuth.getAuthStatus().interactive);
     updateAuthStatusUi();
     return true;
   } catch (e) {
+    staticAuthVerified = false;
     log(`Google auth check: ${e.message}`);
     updateAuthStatusUi();
     return false;
@@ -613,9 +653,11 @@ async function probeApisOnLoad() {
 
   if (onDevServer) {
     log('Dev server detected — Nagwa APIs fall back to /proxy if direct fetch fails.');
-    await mountStaticArchivesIfAvailable();
+    if (!archivesAutoMounted) {
+      await mountStaticArchivesIfAvailable();
+    }
   } else if (isGitHubPagesHost()) {
-    log('Published mode — sign in with Google, paste a Slides URL, pick folders, then run pipeline.');
+    log('Published mode — paste a Slides URL, pick folders, then run pipeline.');
     if (proxy) {
       log(`CORS proxy: ${proxy}`);
     } else {
@@ -658,8 +700,14 @@ async function bootstrap() {
     localStorage.setItem('mmt_proxy_url', googleAuth.corsProxyUrl);
   }
   await loadStaticLinksCsv();
+  await loadArchiveConfig(log);
+  await mountStaticArchivesIfAvailable();
   await googleAuth.loadStaticAuthFiles(log);
   updateAuthStatusUi();
+  if (googleAuth.prefersSharedTokens) {
+    log('Shared Google tokens found — connecting automatically…');
+    await verifyGoogleAuth();
+  }
   await probeApisOnLoad();
 }
 
