@@ -353,6 +353,52 @@ export function isInstructionalInSectionSlide(slide, { bilingual = false } = {})
   return true;
 }
 
+const THANK_YOU_TITLE_NORMALIZED = new Set([
+  'thank you',
+  'شكرًا جزيلًا',
+  'شكرا جزيلًا',
+  'شكرًا جزيلا',
+  'شكرا جزيلا',
+]);
+
+const WELL_DONE_TITLES = new Set(['well done', 'عمل رائع']);
+
+export function isThankYouTitle(title) {
+  const text = csvCellStr(title).trim().replace(/^!+|!+$/g, '').toLowerCase();
+  if (THANK_YOU_TITLE_NORMALIZED.has(text)) return true;
+  const arNorm = stripTashkeel(csvCellStr(title).replace(/ً/g, '').trim().replace(/^!+|!+$/g, '')).toLowerCase();
+  return THANK_YOU_TITLE_NORMALIZED.has(arNorm);
+}
+
+export function isWellDoneTitle(title) {
+  return WELL_DONE_TITLES.has(stripTashkeel(csvCellStr(title)).toLowerCase().replace(/^!+|!+$/g, ''));
+}
+
+export function isBilingualThankYouSlide(slide) {
+  const enTitle = csvCellStr(slide?.en_slide_title).trim().replace(/^!+|!+$/g, '').toLowerCase();
+  const arTitle = csvCellStr(slide?.ar_slide_title).replace(/ً/g, '').trim().replace(/^!+|!+$/g, '');
+  return enTitle === 'thank you' && arTitle === 'شكرا جزيلا';
+}
+
+export function slideHasTailTitle(slide, { bilingual = false } = {}) {
+  if (bilingual) {
+    if (isBilingualThankYouSlide(slide)) return true;
+    for (const key of ['ar_slide_title', 'en_slide_title']) {
+      const val = csvCellStr(slide?.[key]);
+      if (isRecapTitle(val) || isWellDoneTitle(val)) return true;
+    }
+    return false;
+  }
+  const val = csvCellStr(slide?.slide_title);
+  return isThankYouTitle(val) || isRecapTitle(val) || isWellDoneTitle(val);
+}
+
+export function shouldUseSectionPlaceholderTitle(slide, { bilingual = false, isRootTail = false } = {}) {
+  if (isRootTail) return false;
+  if (slideHasTailTitle(slide, { bilingual })) return false;
+  return isInstructionalInSectionSlide(slide, { bilingual });
+}
+
 export function rowUsesApiSectionTitle(row) {
   if (!isSectionId(row?.section_id)) return false;
   if (csvCellStr(row.question_id)) return false;

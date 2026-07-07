@@ -35,7 +35,7 @@ import {
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
-  isInstructionalInSectionSlide,
+  shouldUseSectionPlaceholderTitle,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
@@ -424,7 +424,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         else if (['interactive_example', 'interactive example', 'checkpoint', 'practice'].includes(role)) {
           finalSectionTitle = 'Question';
         }
-      } else if (isInstructionalInSectionSlide(slideData)) {
+      } else if (shouldUseSectionPlaceholderTitle(slideData, { isRootTail: isRootTail })) {
         finalSectionTitle = procSectionTitle;
       } else if (hasSlideTitle) {
         finalSectionTitle = slideData.slide_title;

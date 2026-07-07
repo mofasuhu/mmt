@@ -34,7 +34,7 @@ import {
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
-  isInstructionalInSectionSlide,
+  shouldUseSectionPlaceholderTitle,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
@@ -757,7 +757,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         slide.required_correct = '';
         slide.attempt_window = '';
         previousWasCheckpoint = false;
-        if (isInstructionalInSectionSlide(slide, { bilingual: true })) {
+        if (shouldUseSectionPlaceholderTitle(slide, { bilingual: true, isRootTail: isRootTailSlide })) {
           slide.ar_slide_title = currentArSection;
           slide.en_slide_title = currentEnSection;
         }
