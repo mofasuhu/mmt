@@ -375,11 +375,26 @@ async function processSession(ctx, sessionDir, fontFamily, playIcon) {
   const active = {};
 
   const onProgress = (label, text) => {
+    const isFinal = text.includes('done') || text.startsWith('failed');
+    if (isFinal) {
+      delete active[label];
+      const remaining = Object.keys(active)
+        .sort()
+        .map((k) => `   [${k}] ${active[k]}`);
+      if (remaining.length) {
+        log(remaining.join('\n'), { progress: true });
+      } else {
+        log('', { progress: true, clear: true });
+      }
+      log(`   [${label}] ${text}`);
+      return;
+    }
+
     active[label] = text;
     const lines = Object.keys(active)
       .sort()
       .map((k) => `   [${k}] ${active[k]}`);
-    if (lines.length) log(lines.join('\n'));
+    if (lines.length) log(lines.join('\n'), { progress: true });
   };
 
   const queue = [...videoRows];
@@ -392,12 +407,7 @@ async function processSession(ctx, sessionDir, fontFamily, playIcon) {
         const row = queue[index];
         index += 1;
         inFlight += 1;
-        processVideoRow(ctx, row, sessionDir, lang, font, playIcon, (label, text) => {
-          onProgress(label, text);
-          if (text.includes('done') || text.startsWith('failed')) {
-            delete active[label];
-          }
-        })
+        processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onProgress)
           .catch(reject)
           .finally(() => {
             inFlight -= 1;

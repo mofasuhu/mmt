@@ -55,15 +55,20 @@ function flushProgressToLog() {
 
 /**
  * @param {string} msg
- * @param {{ progress?: boolean }} [options]
+ * @param {{ progress?: boolean, clear?: boolean }} [options]
  */
 function log(msg, options = {}) {
   const line = String(msg);
 
   if (options.progress) {
     if (progressEl) {
-      progressEl.textContent = line;
-      progressEl.hidden = false;
+      if (options.clear) {
+        progressEl.textContent = '';
+        progressEl.hidden = true;
+      } else {
+        progressEl.textContent = line;
+        progressEl.hidden = false;
+      }
       logEl.scrollTop = logEl.scrollHeight;
     }
     return;
