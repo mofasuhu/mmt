@@ -35,6 +35,7 @@ import {
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
+  isInstructionalInSectionSlide,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
@@ -52,7 +53,6 @@ import {
   validationErrorSlideNumber,
   languageFromPresentationFilename,
   detectNewMode,
-  extractSectionTitle,
   collectSlideTexts,
 } from '../pptx/tagParser.js';
 
@@ -271,7 +271,6 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       const slideData = Object.fromEntries(NEW_MODE_SLIDE_FIELDS.map((f) => [f, '']));
-      slideData.section_title_colored = extractSectionTitle(slide);
 
       const verbatimNTags = findVerbatimMultipartTags(combinedText);
       const baseTerminators = [...NEW_MODE_SLIDE_FIELDS, ...verbatimNTags];
@@ -404,9 +403,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       const isThankYou = isThankYouSlide(slideData.slide_title || '');
-      const isRecap = isRecapTitle(
-        slideData.slide_title || slideData.section_title_colored || '',
-      );
+      const isRecap = isRecapTitle(slideData.slide_title || '');
       const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
       let isRootTail = afterLastQuestion && !postQuestionSectionActive;
       if (isThankYou || isRecap) isRootTail = true;
@@ -421,18 +418,16 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       if ((slideData.video_id || '').trim()) {
         const vt = (slideData.video_title || '').trim() || (slideData.slide_title || '').trim();
         if (vt) finalSectionTitle = vt;
-      } else if (hasSlideTitle) {
-        finalSectionTitle = slideData.slide_title;
       } else if (slideData.question_role) {
         const role = (slideData.question_role || '').toLowerCase();
         if (role === 'example') finalSectionTitle = 'Example';
         else if (['interactive_example', 'interactive example', 'checkpoint', 'practice'].includes(role)) {
           finalSectionTitle = 'Question';
         }
-      } else if (procSectionTitle) {
+      } else if (isInstructionalInSectionSlide(slideData)) {
         finalSectionTitle = procSectionTitle;
-      } else if (slideData.section_title_colored) {
-        finalSectionTitle = slideData.section_title_colored;
+      } else if (hasSlideTitle) {
+        finalSectionTitle = slideData.slide_title;
       }
 
       let questionPlacement = '';
@@ -553,7 +548,7 @@ async function processPresentation(vfs, filePath, log, options) {
         }
       }
 
-      const finalData = { section_title: extractSectionTitle(slide) };
+      const finalData = { section_title: '' };
       for (const f of SLIDE_FIELDS) finalData[f] = '';
 
       const combinedText = collectedTexts.join(' ');

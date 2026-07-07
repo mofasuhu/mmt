@@ -337,6 +337,22 @@ export function isVideoCsvRow(row) {
   return isTwelveDigitId(csvCellStr(row?.video_id));
 }
 
+/**
+ * @param {Record<string, string>} slide
+ * @param {{ bilingual?: boolean }} [opts]
+ */
+export function isInstructionalInSectionSlide(slide, { bilingual = false } = {}) {
+  if (csvCellStr(slide?.question_id)) return false;
+  if (csvCellStr(slide?.question_role)) return false;
+  if (bilingual) {
+    if (csvCellStr(slide?.ar_video_id) || csvCellStr(slide?.en_video_id)) return false;
+  } else if (csvCellStr(slide?.video_id)) {
+    return false;
+  }
+  if (csvCellStr(slide?.activity_id)) return false;
+  return true;
+}
+
 export function rowUsesApiSectionTitle(row) {
   if (!isSectionId(row?.section_id)) return false;
   if (csvCellStr(row.question_id)) return false;

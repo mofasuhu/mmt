@@ -34,6 +34,7 @@ import {
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
+  isInstructionalInSectionSlide,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
@@ -756,8 +757,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         slide.required_correct = '';
         slide.attempt_window = '';
         previousWasCheckpoint = false;
-        if (!slide.ar_slide_title) slide.ar_slide_title = currentArSection;
-        if (!slide.en_slide_title) slide.en_slide_title = currentEnSection;
+        if (isInstructionalInSectionSlide(slide, { bilingual: true })) {
+          slide.ar_slide_title = currentArSection;
+          slide.en_slide_title = currentEnSection;
+        }
       }
 
       const isRecapAfterProp = isRecapTitle(slide.ar_slide_title || '')
