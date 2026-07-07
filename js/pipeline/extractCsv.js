@@ -1479,9 +1479,10 @@ export function buildCsvOutcomes(processingSummary, csvsPath) {
       csvPath = `${csvsPath}/${base}`;
     }
     const errs = item.errors || [];
-    const metasessionErrors = errs.filter((e) => /metasession|metadata/i.test(e));
     const pptxNameErrors = errs.filter((e) => e.startsWith('PPTX name ('));
-    const csvErrors = errs.filter((e) => !metasessionErrors.includes(e) && !pptxNameErrors.includes(e));
+    const remaining = errs.filter((e) => !pptxNameErrors.includes(e));
+    const metasessionErrors = remaining.filter((e) => /metasession|metadata/i.test(e));
+    const csvErrors = remaining.filter((e) => !metasessionErrors.includes(e));
     outcomes.push({
       csvFilename: base.endsWith('.csv') ? base : fname,
       csvPath,
