@@ -36,7 +36,8 @@ import {
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
 } from '../shared/sessionCsv.js';
-import { getMetasessionReportRow } from '../shared/metasessionApi.js';
+import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
+import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
 import {
   isThankYouSlide,
@@ -1146,6 +1147,21 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       log(`-> Found metasession_id: ${metaId}`);
       log('   Fetching metasession data from API...');
       const reportRow = await getMetasessionReportRow(metaId, apiOpts);
+      const apiData = await getRawMetasessionData(metaId, { ...apiOpts, fatal: false });
+      let pptxNameErrors = [];
+      if (apiData) {
+        pptxNameErrors = validatePptxNameAgainstApi(originalBaseName, apiData);
+      }
+      if (pptxNameErrors.length) {
+        log('   [FAILURE] PPTX filename validation failed.');
+        for (const err of pptxNameErrors) log(`     - ${err}`);
+        abortPipeline(
+          log,
+          `PPTX filename does not match metasession API for ${metaId}`,
+          pptxNameErrors,
+          { filename: `${metaId}_${originalBaseName}.csv` },
+        );
+      }
 
       const sectionTypeErrors = validateSectionTypesForMetasessionType(
         csvCellStr(reportRow?.['Class Type']),
@@ -1251,7 +1267,11 @@ export async function runExtractCsv(ctx, pptxFilenames) {
           );
         }
 
-        processingSummary.push({ filename: finalSaveName, status: 'VALID', errors: [] });
+        processingSummary.push({
+          filename: finalSaveName,
+          status: 'VALID',
+          errors: [],
+        });
 
         const sheetRows = await collectSlideIdRowsFromCsv(vfs, saveFilepath, log);
         if (sheetRows.length > 0) {
@@ -1270,6 +1290,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       let finalSaveName = `${originalBaseName}.csv`;
       let savePermission = true;
       const validationErrors = [];
+      let legacyPptxErrors = [];
 
       const numeralsVal = csvCellStr(headerMetadata.numerals);
       if (numeralsVal) {
@@ -1286,6 +1307,16 @@ export async function runExtractCsv(ctx, pptxFilenames) {
           log(`-> Found metasession_id: ${metaId}`);
           log('   Fetching metasession data from API...');
           const reportRow = await getMetasessionReportRow(metaId, apiOpts);
+          const apiData = await getRawMetasessionData(metaId, { ...apiOpts, fatal: false });
+          if (apiData) {
+            legacyPptxErrors = validatePptxNameAgainstApi(originalBaseName, apiData);
+          }
+          if (legacyPptxErrors.length) {
+            log('   [FAILURE] PPTX filename validation failed.');
+            for (const err of legacyPptxErrors) log(`     - ${err}`);
+            savePermission = false;
+            validationErrors.push(...legacyPptxErrors);
+          }
 
           log('   Validating metadata against API response...');
           const { valid: isValidMeta, errors: metaErrors } = validateHeaderAgainstReport(
@@ -1319,7 +1350,11 @@ export async function runExtractCsv(ctx, pptxFilenames) {
 
         if (isValidContent) {
           log('   [SUCCESS] Content validation passed.');
-          processingSummary.push({ filename: finalSaveName, status: 'VALID', errors: [] });
+          processingSummary.push({
+            filename: finalSaveName,
+            status: 'VALID',
+            errors: [],
+          });
 
           const sheetRows = await collectSlideIdRowsFromCsv(vfs, saveFilepath, log);
           if (sheetRows.length > 0) {
@@ -1445,13 +1480,15 @@ export function buildCsvOutcomes(processingSummary, csvsPath) {
     }
     const errs = item.errors || [];
     const metasessionErrors = errs.filter((e) => /metasession|metadata/i.test(e));
-    const csvErrors = errs.filter((e) => !metasessionErrors.includes(e));
+    const pptxNameErrors = errs.filter((e) => e.startsWith('PPTX name ('));
+    const csvErrors = errs.filter((e) => !metasessionErrors.includes(e) && !pptxNameErrors.includes(e));
     outcomes.push({
       csvFilename: base.endsWith('.csv') ? base : fname,
       csvPath,
       metasessionId: mid,
       csvErrors,
       metasessionErrors,
+      pptxNameErrors,
     });
   }
   return outcomes;

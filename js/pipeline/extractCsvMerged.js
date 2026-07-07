@@ -35,7 +35,8 @@ import {
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
 } from '../shared/sessionCsv.js';
-import { getMetasessionReportRow } from '../shared/metasessionApi.js';
+import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
+import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
 import { getNumeralConvention, collectSlideTexts, stripExclamationMarks } from '../pptx/tagParser.js';
 import { buildCsvOutcomes, ValidationAbort } from './extractCsv.js';
@@ -1505,6 +1506,25 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
       }
     }
 
+    const pptxNameErrorsByMeta = {};
+    for (const [langKey, metaId, pptxStem] of [
+      ['AR', csvCellStr(slide1.ar_metasession_id), arPptxStem],
+      ['EN', csvCellStr(slide1.en_metasession_id), enPptxStem],
+    ]) {
+      if (!metaId) continue;
+      const apiData = await getRawMetasessionData(metaId, {
+        log,
+        fetchFn: config.fetchFn || fetch,
+        fatal: false,
+      });
+      if (!apiData) continue;
+      pptxNameErrorsByMeta[metaId] = validatePptxNameAgainstApi(
+        pptxStem,
+        apiData,
+        { stemLabel: `${langKey} stem` },
+      );
+    }
+
     if (extractionMode === 'new_mode') {
       const arMetaId = csvCellStr(slide1.ar_metasession_id);
       const enMetaId = csvCellStr(slide1.en_metasession_id);
@@ -1531,74 +1551,102 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
       }
 
       if (arMetaId) {
-        const arReport = sessionReportMap[arMetaId];
-        const arSectionTypeErrors = validateSectionTypesForMetasessionType(
-          csvCellStr(arReport?.['Class Type']),
-          { slides: allSlidesData },
-        );
-        if (arSectionTypeErrors.length > 0) {
-          log('   [FAILURE] Metasession section_type validation failed (AR).');
-          for (const err of arSectionTypeErrors) log(`      - ${err}`);
+        const arNameErrors = pptxNameErrorsByMeta[arMetaId] || [];
+        if (arNameErrors.length) {
+          log('   [FAILURE] PPTX filename validation failed (AR).');
+          for (const err of arNameErrors) log(`      - ${err}`);
           processingSummary.push({
             filename: `${arMetaId}_${arPptxStem}_ar.csv (Not Created)`,
             status: 'FAILED',
-            errors: arSectionTypeErrors,
+            errors: arNameErrors,
           });
           if (_abortOnError) {
-            abortPipeline(log, `Invalid section_type for metasession ${arMetaId}`, arSectionTypeErrors);
+            abortPipeline(log, `PPTX filename does not match metasession API for ${arMetaId}`, arNameErrors);
           }
         } else {
-        const arFirstTitle = getFirstSlideTitleFromReport(arReport);
-        const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, arFirstTitle);
-        const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
-        const arResult = await processAndValidateCsvNewMode(
-          vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
-        );
-        processingSummary.push({
-          filename: basename(arSavePath),
-          status: arResult.status,
-          errors: arResult.errors,
-        });
-        if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
-        else if (_abortOnError) {
-          abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
-        }
+          const arReport = sessionReportMap[arMetaId];
+          const arSectionTypeErrors = validateSectionTypesForMetasessionType(
+            csvCellStr(arReport?.['Class Type']),
+            { slides: allSlidesData },
+          );
+          if (arSectionTypeErrors.length > 0) {
+            log('   [FAILURE] Metasession section_type validation failed (AR).');
+            for (const err of arSectionTypeErrors) log(`      - ${err}`);
+            processingSummary.push({
+              filename: `${arMetaId}_${arPptxStem}_ar.csv (Not Created)`,
+              status: 'FAILED',
+              errors: arSectionTypeErrors,
+            });
+            if (_abortOnError) {
+              abortPipeline(log, `Invalid section_type for metasession ${arMetaId}`, arSectionTypeErrors);
+            }
+          } else {
+            const arFirstTitle = getFirstSlideTitleFromReport(arReport);
+            const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, arFirstTitle);
+            const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
+            const arResult = await processAndValidateCsvNewMode(
+              vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
+            );
+            processingSummary.push({
+              filename: basename(arSavePath),
+              status: arResult.status,
+              errors: arResult.errors,
+            });
+            if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
+            else if (_abortOnError) {
+              abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+            }
+          }
         }
       }
 
       if (enMetaId) {
-        const enReport = sessionReportMap[enMetaId];
-        const enSectionTypeErrors = validateSectionTypesForMetasessionType(
-          csvCellStr(enReport?.['Class Type']),
-          { slides: allSlidesData },
-        );
-        if (enSectionTypeErrors.length > 0) {
-          log('   [FAILURE] Metasession section_type validation failed (EN).');
-          for (const err of enSectionTypeErrors) log(`      - ${err}`);
+        const enNameErrors = pptxNameErrorsByMeta[enMetaId] || [];
+        if (enNameErrors.length) {
+          log('   [FAILURE] PPTX filename validation failed (EN).');
+          for (const err of enNameErrors) log(`      - ${err}`);
           processingSummary.push({
             filename: `${enMetaId}_${enPptxStem}_en.csv (Not Created)`,
             status: 'FAILED',
-            errors: enSectionTypeErrors,
+            errors: enNameErrors,
           });
           if (_abortOnError) {
-            abortPipeline(log, `Invalid section_type for metasession ${enMetaId}`, enSectionTypeErrors);
+            abortPipeline(log, `PPTX filename does not match metasession API for ${enMetaId}`, enNameErrors);
           }
         } else {
-        const enFirstTitle = getFirstSlideTitleFromReport(enReport);
-        const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, enFirstTitle);
-        const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
-        const enResult = await processAndValidateCsvNewMode(
-          vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
-        );
-        processingSummary.push({
-          filename: basename(enSavePath),
-          status: enResult.status,
-          errors: enResult.errors,
-        });
-        if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
-        else if (_abortOnError) {
-          abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
-        }
+          const enReport = sessionReportMap[enMetaId];
+          const enSectionTypeErrors = validateSectionTypesForMetasessionType(
+            csvCellStr(enReport?.['Class Type']),
+            { slides: allSlidesData },
+          );
+          if (enSectionTypeErrors.length > 0) {
+            log('   [FAILURE] Metasession section_type validation failed (EN).');
+            for (const err of enSectionTypeErrors) log(`      - ${err}`);
+            processingSummary.push({
+              filename: `${enMetaId}_${enPptxStem}_en.csv (Not Created)`,
+              status: 'FAILED',
+              errors: enSectionTypeErrors,
+            });
+            if (_abortOnError) {
+              abortPipeline(log, `Invalid section_type for metasession ${enMetaId}`, enSectionTypeErrors);
+            }
+          } else {
+            const enFirstTitle = getFirstSlideTitleFromReport(enReport);
+            const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, enFirstTitle);
+            const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
+            const enResult = await processAndValidateCsvNewMode(
+              vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
+            );
+            processingSummary.push({
+              filename: basename(enSavePath),
+              status: enResult.status,
+              errors: enResult.errors,
+            });
+            if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
+            else if (_abortOnError) {
+              abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+            }
+          }
         }
       }
 
@@ -1612,7 +1660,11 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
     const arMetaId = csvCellStr(slide1.ar_metasession_id);
     let arMetaErrors = [];
     let arValid = Boolean(arMetaId);
-    if (!arMetaId) {
+    const arNameErrors = arMetaId ? (pptxNameErrorsByMeta[arMetaId] || []) : [];
+    if (arNameErrors.length) {
+      arValid = false;
+      arMetaErrors = arNameErrors;
+    } else if (!arMetaId) {
       arMetaErrors = ["Validation Error: Mandatory tag 'ar_metasession_id' is missing from the first slide."];
       arValid = false;
     } else {
@@ -1650,7 +1702,11 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
     const enMetaId = csvCellStr(slide1.en_metasession_id);
     let enMetaErrors = [];
     let enValid = Boolean(enMetaId);
-    if (!enMetaId) {
+    const enNameErrors = enMetaId ? (pptxNameErrorsByMeta[enMetaId] || []) : [];
+    if (enNameErrors.length) {
+      enValid = false;
+      enMetaErrors = enNameErrors;
+    } else if (!enMetaId) {
       enMetaErrors = ["Validation Error: Mandatory tag 'en_metasession_id' is missing from the first slide."];
       enValid = false;
     } else {

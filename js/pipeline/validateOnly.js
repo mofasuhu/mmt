@@ -43,7 +43,7 @@ function reportFromOutcome({ sourceUrl, pptxName, pptxErrors, outcome }) {
     metasessionId: outcome.metasessionId || '',
     csvFilename: outcome.csvFilename || '',
     metasessionIds: outcome.metasessionId ? [outcome.metasessionId] : [],
-    pptxErrors: [...pptxErrors],
+    pptxErrors: [...pptxErrors, ...(outcome.pptxNameErrors || [])],
     csvErrors: [...(outcome.csvErrors || [])],
     metasessionErrors: [...(outcome.metasessionErrors || [])],
     sectionErrors: [],
@@ -186,7 +186,7 @@ function logSessionResult(log, report) {
 function printDoneSummary(log, reports, reportPath) {
   const passed = reports.filter((r) => sessionPassed(r)).length;
   const failed = reports.length - passed;
-  const warned = reports.filter((r) => sessionPassed(r) && r.sectionWarnings.length).length;
+  const warned = reports.filter((r) => sessionPassed(r) && (r.sectionWarnings?.length)).length;
   if (failed && warned) {
     log(`Done: ✅ ${passed}/${reports.length} passed, ❌ ${failed} failed, ⚠️  ${warned} with warnings — ${reportPath}`);
   } else if (failed) {

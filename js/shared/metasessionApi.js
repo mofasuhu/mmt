@@ -1,6 +1,7 @@
 /** Metasession API client — port of metasession_api.py */
 
 import { normalizeMetasessionId, validateMetasessionTypeSupported } from './sessionCsv.js';
+import { sessionNumberFromTitle } from './pptxNameValidator.js';
 
 const API_URL = 'https://admin.classes.nagwa.com/api/v1/metasessions/{metasession_id}/';
 const API_KEY = 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc';
@@ -10,74 +11,6 @@ const TIMEOUT_SEC = 30;
 
 const _cache = new Map();
 const _rawCache = new Map();
-
-/** @type {Record<string, number>} */
-const ARABIC_SESSION_NUMBER_MAP = {
-  'الحصة الأولى': 1,
-  'الحصة الثانية': 2,
-  'الحصة الثالثة': 3,
-  'الحصة الرابعة': 4,
-  'الحصة الخامسة': 5,
-  'الحصة السادسة': 6,
-  'الحصة السابعة': 7,
-  'الحصة الثامنة': 8,
-  'الحصة التاسعة': 9,
-  'الحصة العاشرة': 10,
-  'الحصة الحادية عشرة': 11,
-  'الحصة الثانية عشرة': 12,
-  'الحصة الثالثة عشرة': 13,
-  'الحصة الرابعة عشرة': 14,
-  'الحصة الخامسة عشرة': 15,
-  'الحصة السادسة عشرة': 16,
-  'الحصة السابعة عشرة': 17,
-  'الحصة الثامنة عشرة': 18,
-  'الحصة التاسعة عشرة': 19,
-  'الحصة العشرون': 20,
-  'الحصة الحادية والعشرون': 21,
-  'الحصة الثانية والعشرون': 22,
-  'الحصة الثالثة والعشرون': 23,
-  'الحصة الرابعة والعشرون': 24,
-  'الحصة الخامسة والعشرون': 25,
-  'الحصة السادسة والعشرون': 26,
-  'الحصة السابعة والعشرون': 27,
-  'الحصة الثامنة والعشرون': 28,
-  'الحصة التاسعة والعشرون': 29,
-  'الحصة الثلاثون': 30,
-  'الحصة الحادية والثلاثون': 31,
-  'الحصة الثانية والثلاثون': 32,
-  'الحصة الثالثة والثلاثون': 33,
-  'الحصة الرابعة والثلاثون': 34,
-  'الحصة الخامسة والثلاثون': 35,
-  'الحصة السادسة والثلاثون': 36,
-  'الحصة السابعة والثلاثون': 37,
-  'الحصة الثامنة والثلاثون': 38,
-  'الحصة التاسعة والثلاثون': 39,
-  'الحصة الأربعون': 40,
-  'الحصة الحادية والأربعون': 41,
-  'الحصة الثانية والأربعون': 42,
-  'الحصة الثالثة والأربعون': 43,
-  'الحصة الرابعة والأربعون': 44,
-  'الحصة الخامسة والأربعون': 45,
-  'الحصة السادسة والأربعون': 46,
-  'الحصة السابعة والأربعون': 47,
-  'الحصة الثامنة والأربعون': 48,
-  'الحصة التاسعة والأربعون': 49,
-  'الحصة الخمسون': 50,
-  'الحصة الواحدة والخمسون': 51,
-  'الحصة الثانية والخمسون': 52,
-  'الحصة الثالثة والخمسون': 53,
-  'الحصة الرابعة والخمسون': 54,
-  'الحصة الخامسة والخمسون': 55,
-  'الحصة السادسة والخمسون': 56,
-  'الحصة السابعة والخمسون': 57,
-  'الحصة الثامنة والخمسون': 58,
-  'الحصة التاسعة والخمسون': 59,
-  'الحصة الستون': 60,
-  'الحصة الواحدة والستون': 61,
-  'الحصة الثانية والستون': 62,
-  'الحصة الثالثة والستون': 63,
-  'الحصة الرابعة والستون': 64,
-};
 
 /**
  * Split on the first ASCII or fullwidth colon only (matches Python re.split maxsplit=1).
@@ -106,18 +39,15 @@ export function stripSessionPrefix(metasessionTitle) {
  * @returns {string | null}
  */
 export function computeMetasessionNumber(metasessionTitle) {
-  if (!metasessionTitle) return null;
-  const parts = splitOnceOnColon(metasessionTitle);
-  const prefix = parts ? parts.before : metasessionTitle.trim();
-  if (prefix in ARABIC_SESSION_NUMBER_MAP) {
-    return String(ARABIC_SESSION_NUMBER_MAP[prefix]);
+  const result = sessionNumberFromTitle(metasessionTitle);
+  if (result == null && metasessionTitle) {
+    const parts = splitOnceOnColon(metasessionTitle);
+    const prefix = parts ? parts.before : metasessionTitle.trim();
+    console.warn(
+      `Could not derive metasession_number from title prefix: '${prefix}' (full title: '${metasessionTitle}').`,
+    );
   }
-  const m = /^Session\s+(\d+)$/i.exec(prefix);
-  if (m) return m[1];
-  console.warn(
-    `Could not derive metasession_number from title prefix: '${prefix}' (full title: '${metasessionTitle}').`,
-  );
-  return null;
+  return result;
 }
 
 /** @type {typeof fetch | null} */
