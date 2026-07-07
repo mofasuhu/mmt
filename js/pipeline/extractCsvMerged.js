@@ -33,6 +33,7 @@ import {
   validatePracticeQuestionTypesFromRows,
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
+  normalizeVideoThumbnailTs,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -286,10 +287,10 @@ function isThankYouSlideMerged(slideData) {
 }
 
 function videoThumbnailTsForSlide(slide, lang) {
-  if (lang === 'ar') {
-    return (slide.ar_timestamp || '').trim() || (slide.timestamp || '').trim();
-  }
-  return (slide.en_timestamp || '').trim() || (slide.timestamp || '').trim();
+  const raw = lang === 'ar'
+    ? (slide.ar_timestamp || '').trim() || (slide.timestamp || '').trim()
+    : (slide.en_timestamp || '').trim() || (slide.timestamp || '').trim();
+  return normalizeVideoThumbnailTs(raw);
 }
 
 function applyVideoSlideTitles(slide) {

@@ -34,6 +34,7 @@ import {
   validatePracticeQuestionTypesFromRows,
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
+  normalizeVideoThumbnailTs,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
@@ -485,7 +486,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         '',
         slideData.section_gp || '',
         slideData.video_id || '',
-        slideData.timestamp || '',
+        normalizeVideoThumbnailTs(slideData.timestamp || ''),
         slideData.activity_id || '',
         slideData.verbatim || '',
         '', '', '', '', '', '', '', '', '', '',
@@ -585,7 +586,7 @@ async function processPresentation(vfs, filePath, log, options) {
         finalData.homework || '',
         finalData.section_gp || '',
         finalData.video_id || '',
-        finalData.timestamp || '',
+        normalizeVideoThumbnailTs(finalData.timestamp || ''),
         finalData.activity_id || '',
         finalData.verbatim || '',
       ];

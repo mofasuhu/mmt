@@ -8,6 +8,7 @@ import {
   isTwelveDigitId,
   languageFromCsvPath,
   loadSessionRows,
+  normalizeVideoThumbnailTs,
 } from '../shared/sessionCsv.js';
 import { fetchDownloadUrl } from '../shared/httpFetch.js';
 import { extractFrame } from '../video/ffmpegBridge.js';
@@ -53,7 +54,7 @@ function metasessionIdFromFolderName(name) {
  * @returns {number}
  */
 function parseTimestampToSeconds(raw) {
-  const s = csvCellStr(raw);
+  const s = normalizeVideoThumbnailTs(raw);
   if (!s) throw new Error('empty timestamp');
   if (s.includes(':')) {
     const parts = s.split(':').map((p) => Number(p.trim()));

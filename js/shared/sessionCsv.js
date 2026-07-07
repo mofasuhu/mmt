@@ -324,6 +324,15 @@ export function sectionTitleReservedForRole(title) {
   return Object.values(TOC_TITLE_BY_LANGUAGE).some((toc) => text === toc.toLowerCase());
 }
 
+const ZERO_VIDEO_THUMBNAIL_TS_RE = /^(?:0{1,2}:0{2}(?:\.0+)?|(?:0{1,2}:){2}0{2}(?:\.0+)?)$/;
+
+export function normalizeVideoThumbnailTs(raw) {
+  const s = csvCellStr(raw);
+  if (!s || !s.includes(':')) return s;
+  if (ZERO_VIDEO_THUMBNAIL_TS_RE.test(s)) return '00:00.5';
+  return s;
+}
+
 export function isVideoCsvRow(row) {
   return isTwelveDigitId(csvCellStr(row?.video_id));
 }
