@@ -89,8 +89,10 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
 
   texParts.push('');
 
-  function formatSlide(element) {
-    const row = lookupRow(element);
+  function formatSlide(element, row = undefined) {
+    if (row === undefined) {
+      row = lookupRow(element);
+    }
     const xmlType = element.getAttribute('slide_type');
     const slideIdVal = csvCellStr(element.getAttribute('slide_id'));
     const questionIdVal = csvCellStr(element.getAttribute('question_id'));
@@ -164,10 +166,10 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
       const texType = texTypeFromRow(row, element.getAttribute('slide_type'));
       if (texType === 'toc') {
         texParts.push('    \\begin{toc}');
-        texParts.push(`        ${formatSlide(element)}`);
+        texParts.push(`        ${formatSlide(element, row)}`);
         texParts.push('    \\end{toc}');
       } else {
-        texParts.push(`    ${formatSlide(element)}`);
+        texParts.push(`    ${formatSlide(element, row)}`);
       }
     } else if (element.tagName === 'section') {
       texParts.push(...processSectionElement(element));
