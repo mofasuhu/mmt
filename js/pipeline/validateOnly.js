@@ -33,6 +33,7 @@ function sessionPassed(report) {
     && !report.metasessionErrors.length
     && !report.sectionErrors.length
     && !report.missingQuestionErrors.length
+    && !report.xmlOutputErrors.length
   );
 }
 
@@ -49,6 +50,8 @@ function reportFromOutcome({ sourceUrl, pptxName, pptxErrors, outcome }) {
     sectionErrors: [],
     sectionWarnings: [],
     missingQuestionErrors: [],
+    xmlOutputErrors: [],
+    xmlOutputWarnings: [],
     downloadOk: true,
     downloadError: '',
   };
@@ -118,6 +121,17 @@ function formatReportBlock(report) {
     lines.push('');
   }
 
+  lines.push('--- XML output validation ---');
+  if (report.xmlOutputErrors.length) {
+    for (const err of report.xmlOutputErrors) lines.push(`  ${err}`);
+  } else {
+    lines.push('  PASSED');
+  }
+  if (report.xmlOutputWarnings.length) {
+    for (const warn of report.xmlOutputWarnings) lines.push(`  WARNING: ${warn}`);
+  }
+  lines.push('');
+
   return `${lines.join('\n')}\n`;
 }
 
@@ -164,7 +178,9 @@ function collectSessionIssues(report) {
   for (const err of report.metasessionErrors) errors.push(`Metasession API: ${err}`);
   for (const err of report.sectionErrors) errors.push(`Section: ${err}`);
   for (const err of report.missingQuestionErrors) errors.push(`Missing QMS: ${err}`);
+  for (const err of report.xmlOutputErrors) errors.push(`XML output: ${err}`);
   for (const warn of report.sectionWarnings) warnings.push(`Section warning: ${warn}`);
+  for (const warn of report.xmlOutputWarnings) warnings.push(`XML output warning: ${warn}`);
   return { errors, warnings };
 }
 
@@ -262,6 +278,8 @@ export async function runValidateOnly(ctx) {
         sectionErrors: [],
         sectionWarnings: [],
         missingQuestionErrors: [],
+        xmlOutputErrors: [],
+        xmlOutputWarnings: [],
         downloadOk: false,
         downloadError: item.error || 'Download failed',
       };
@@ -330,6 +348,8 @@ export async function runValidateOnly(ctx) {
             sectionErrors: [],
             sectionWarnings: [],
             missingQuestionErrors: [],
+            xmlOutputErrors: [],
+            xmlOutputWarnings: [],
             downloadOk: true,
             downloadError: '',
           };
@@ -352,6 +372,8 @@ export async function runValidateOnly(ctx) {
               sectionErrors,
               sectionWarnings,
               missingQuestionErrors,
+              xmlOutputErrors,
+              xmlOutputWarnings,
               metasessionId,
             } = await validateSessionCsv(validateCtx, outcome.csvPath, {
               metasessionDetailsCache: metasessionCache,
@@ -361,6 +383,8 @@ export async function runValidateOnly(ctx) {
             sessionReport.sectionErrors = sectionErrors;
             sessionReport.sectionWarnings = sectionWarnings;
             sessionReport.missingQuestionErrors = missingQuestionErrors;
+            sessionReport.xmlOutputErrors = xmlOutputErrors;
+            sessionReport.xmlOutputWarnings = xmlOutputWarnings;
             if (metasessionId) {
               sessionReport.metasessionId = metasessionId;
               sessionReport.metasessionIds = [metasessionId];
@@ -384,6 +408,8 @@ export async function runValidateOnly(ctx) {
           sectionErrors: [],
           sectionWarnings: [],
           missingQuestionErrors: [],
+          xmlOutputErrors: [],
+          xmlOutputWarnings: [],
           downloadOk: true,
           downloadError: '',
         };

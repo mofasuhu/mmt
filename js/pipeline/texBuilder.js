@@ -13,6 +13,7 @@ import {
   texTypeFromRow,
   slideTitleFromRow,
   slideNumberFromRow,
+  xmlRoleFromSlideElement,
 } from '../shared/sessionCsv.js';
 
 /**
@@ -93,7 +94,7 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
     if (row === undefined) {
       row = lookupRow(element);
     }
-    const xmlType = element.getAttribute('slide_type');
+    const xmlType = xmlRoleFromSlideElement(element);
     const slideIdVal = csvCellStr(element.getAttribute('slide_id'));
     const questionIdVal = csvCellStr(element.getAttribute('question_id'));
 
@@ -103,7 +104,11 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
     let slideTitle;
 
     if (row) {
-      slideId = resolveSlideId(row);
+      if (element.getAttribute('slide_category') === 'question') {
+        slideId = slideIdVal || questionIdVal;
+      } else {
+        slideId = resolveSlideId(row);
+      }
       slideNumber = slideNumberFromRow(row, element.getAttribute('slide_number'));
       slideType = texTypeFromRow(row, xmlType);
       slideTitle = slideTitleFromRow(row, element.getAttribute('slide_title'));
@@ -163,7 +168,7 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
     if (element.tagName === 'slide') {
       if (!element.getAttribute('slide_number')) continue;
       const row = lookupRow(element);
-      const texType = texTypeFromRow(row, element.getAttribute('slide_type'));
+      const texType = texTypeFromRow(row, xmlRoleFromSlideElement(element));
       if (texType === 'toc') {
         texParts.push('    \\begin{toc}');
         texParts.push(`        ${formatSlide(element, row)}`);

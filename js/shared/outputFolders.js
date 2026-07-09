@@ -4,9 +4,9 @@ export const OUTPUT_FOLDERS_BY_STEP = [
   [1, 'sessions'],
   [2, 'csvs'],
   [3, 'xml'],
-  [4, 'tex'],
-  [5, 'files'],
-  [6, 'CLS'],
+  [5, 'tex'],
+  [6, 'files'],
+  [7, 'CLS'],
 ];
 
 /**

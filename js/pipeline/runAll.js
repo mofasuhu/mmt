@@ -6,6 +6,7 @@ import { runDownloadWithRename } from './downloadWithRename.js';
 import { runExtractCsv, PipelineAbortError as ExtractAbort } from './extractCsv.js';
 import { runExtractCsvMerged, PipelineAbortError as MergedAbort } from './extractCsvMerged.js';
 import { runXmlBuilder } from './xmlBuilder.js';
+import { validateXmlOutputs } from '../shared/mtXmlValidator.js';
 import { runTexBuilder } from './texBuilder.js';
 import { runMakeFiles } from './makeFiles.js';
 import { runCopySlidesContent } from './copySlidesContent.js';
@@ -20,16 +21,17 @@ export const PIPELINE_STEP_LABELS = {
   1: 'download_with_rename',
   2: 'extract_csv stage',
   3: 'xml_builder',
-  4: 'tex_builder',
-  5: 'make_files',
-  6: 'copy_slides_content',
-  7: 'clean_wrapped_slides',
-  8: 'add_verbatim_to_slides',
-  9: 'video_slide',
-  10: 'Rename session folders and remove CSV',
+  4: 'mt_xml_validator',
+  5: 'tex_builder',
+  6: 'make_files',
+  7: 'copy_slides_content',
+  8: 'clean_wrapped_slides',
+  9: 'add_verbatim_to_slides',
+  10: 'video_slide',
+  11: 'Rename session folders and remove CSV',
 };
 
-export const LAST_PIPELINE_STEP = 10;
+export const LAST_PIPELINE_STEP = 11;
 
 function stamp() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -183,12 +185,13 @@ export async function runPipeline(ctx, startStep = 1, onStepStatus = null) {
 
   const remaining = [
     [3, 'xml_builder', runXmlBuilder],
-    [4, 'tex_builder', runTexBuilder],
-    [5, 'make_files', runMakeFiles],
-    [6, 'copy_slides_content', runCopySlidesContent],
-    [7, 'clean_wrapped_slides', runCleanWrappedSlides],
-    [8, 'add_verbatim_to_slides', runAddVerbatimToSlides],
-    [9, 'video_slide', runVideoSlide],
+    [4, 'mt_xml_validator', validateXmlOutputs],
+    [5, 'tex_builder', runTexBuilder],
+    [6, 'make_files', runMakeFiles],
+    [7, 'copy_slides_content', runCopySlidesContent],
+    [8, 'clean_wrapped_slides', runCleanWrappedSlides],
+    [9, 'add_verbatim_to_slides', runAddVerbatimToSlides],
+    [10, 'video_slide', runVideoSlide],
   ];
 
   for (const [stepNum, name, fn] of remaining) {
@@ -218,17 +221,17 @@ export async function runPipeline(ctx, startStep = 1, onStepStatus = null) {
     }
   }
 
-  // Step 10
-  if (startStep <= 10) {
-    setStatus(10, 'running');
-    ctx.log('\nStep 10: Rename session folders and remove CSV');
+  // Step 11
+  if (startStep <= 11) {
+    setStatus(11, 'running');
+    ctx.log('\nStep 11: Rename session folders and remove CSV');
     ctx.log(`${'='.repeat(60)}\n`);
     const renameResult = await runRenameSessionFolders(ctx);
     results.rename_session_folders = renameResult?.ok !== false;
-    setStatus(10, 'success');
+    setStatus(11, 'success');
   } else {
     results.rename_session_folders = null;
-    setStatus(10, 'skipped');
+    setStatus(11, 'skipped');
   }
 
   ctx.log(`\n${'='.repeat(60)}`);

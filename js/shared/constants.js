@@ -35,13 +35,13 @@ export const NEW_MODE_SLIDE_FIELDS = [
   'slide_id', 'section_id', 'question_id', 'question_role',
   'required_correct', 'attempt_window', 'section_gp',
   'video_id', 'video_title', 'timestamp', 'activity_id', 'verbatim', 'verbatim_listening',
-  'section_title', 'slide_title', 'section_type',
+  'section_title', 'slide_title', 'section_type', 'exam_id', 'exam_title', 'duration',
 ];
 
 export const SECTION_ID_TAGS = new Set(['section_id']);
 
 export const VALID_QUESTION_ROLES = [
-  'interactive_example', 'interactive example', 'example', 'checkpoint', 'practice',
+  'interactive_example', 'interactive example', 'example', 'checkpoint', 'practice', 'exam',
 ];
 
 export const THANK_YOU_PATTERNS = [

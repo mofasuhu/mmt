@@ -93,6 +93,28 @@ const CANONICAL_SLIDE_TITLES = {
   example: { ar: 'مثال', en: 'Example' },
 };
 
+export const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'activity', 'thank_you']);
+export const QUESTION_ROLES = new Set(['example', 'interactive_example']);
+
+const CANONICAL_QUESTION_SLIDE_TITLES = {
+  example: {
+    ar: 'مثال',
+    en: 'Example',
+    fr: 'Exemple',
+    es: 'Ejemplo',
+    de: 'Beispiel',
+    it: 'Esempio',
+  },
+  interactive_example: {
+    ar: 'مثال تفاعلي',
+    en: 'Interactive Example',
+    fr: 'Exemple Interactif',
+    es: 'Ejemplo Interactivo',
+    de: 'Interaktives Beispiel',
+    it: 'Esempio Interattivo',
+  },
+};
+
 export function languageFromCsvPath(csvPath) {
   const base = String(csvPath).split('/').pop() || '';
   const lower = base.toLowerCase();
@@ -156,6 +178,54 @@ export function localizeCanonicalSlideTitle(title, lang) {
   const mapping = CANONICAL_SLIDE_TITLES[text.toLowerCase()];
   if (mapping) return mapping[code] || text;
   return text;
+}
+
+export function slideCategoryAndRole(slideTypeOrPurpose) {
+  const role = csvCellStr(slideTypeOrPurpose).toLowerCase().replace(/ /g, '_');
+  if (QUESTION_ROLES.has(role)) return ['question', role];
+  if (PRESENTATION_ROLES.has(role)) return ['presentation', role];
+  if (role.startsWith('question')) return ['question', 'interactive_example'];
+  return ['presentation', 'instructional'];
+}
+
+export function canonicalQuestionSlideTitle(language, role) {
+  const code = normalizeLanguageCode(language);
+  const roleKey = csvCellStr(role).toLowerCase().replace(/ /g, '_');
+  const mapping = CANONICAL_QUESTION_SLIDE_TITLES[roleKey] || CANONICAL_QUESTION_SLIDE_TITLES.example;
+  return mapping[code] || mapping.en;
+}
+
+export function splitPartQualifiedQuestionId(raw) {
+  const s = csvCellStr(raw);
+  if (!s) return [null, 1];
+  const match = s.match(/^(\d{12})(?:\.(\d+))?$/);
+  if (!match) return [normalizeQuestionIdBase(s), 1];
+  return [match[1], match[2] ? Number.parseInt(match[2], 10) : 1];
+}
+
+export function formatQuestionPartId(rawId, partNumber = null) {
+  const [base, parsedPart] = splitPartQualifiedQuestionId(rawId);
+  if (!base) return csvCellStr(rawId);
+  let part = partNumber == null ? parsedPart : Number.parseInt(partNumber, 10);
+  if (!Number.isFinite(part) || part < 1) part = parsedPart || 1;
+  return `${base}.${String(part).padStart(2, '0')}`;
+}
+
+export function questionPartAttrs(questionId, metadataByParent = null) {
+  const [baseId, partNumber] = splitPartQualifiedQuestionId(questionId);
+  const metadata = metadataByParent instanceof Map
+    ? metadataByParent.get(baseId || '')
+    : metadataByParent?.[baseId || ''];
+  const numberOfParts = Number.parseInt(metadata?.number_of_parts ?? 1, 10) || 1;
+  return {
+    question_id: formatQuestionPartId(questionId, partNumber),
+    number_of_parts: String(numberOfParts),
+    part_number: String(partNumber),
+  };
+}
+
+export function xmlRoleFromSlideElement(element) {
+  return csvCellStr(element.getAttribute('slide_role')) || csvCellStr(element.getAttribute('slide_type'));
 }
 
 export function isNewId(val) {
@@ -613,6 +683,7 @@ export function validateSessionSectionCoverage(rows, { fieldnames = null } = {})
   for (const row of rows) {
     const qid = csvCellStr(row.question_id);
     if (!qid) continue;
+    if (csvCellStr(row.question_role).toLowerCase().replace(/ /g, '_') === 'exam') continue;
     const slideNum = csvCellStr(row.slide_number) || '?';
 
     let hasSection;
@@ -754,10 +825,11 @@ export function normalizeSectionType(raw, defaultVal = 'regular') {
   const lowered = s.toLowerCase();
   if (lowered === 'full curriculum') return 'regular';
   if (lowered === 'final revision') return 'revision';
+  if (lowered === 'foundation') return 'foundation';
   return s;
 }
 
-export const SUPPORTED_METASESSION_TYPE_LABELS = new Set(['full curriculum', 'final revision']);
+export const SUPPORTED_METASESSION_TYPE_LABELS = new Set(['full curriculum', 'final revision', 'foundation']);
 
 export function metasessionTypeLabel(raw) {
   return csvCellStr(raw);
@@ -774,7 +846,9 @@ export function validateMetasessionTypeSupported(metasessionType) {
 }
 
 export function expectedSectionTypeForMetasessionType(metasessionType) {
-  if (metasessionTypeLabel(metasessionType).toLowerCase() === 'final revision') return 'revision';
+  const label = metasessionTypeLabel(metasessionType).toLowerCase();
+  if (label === 'foundation') return 'foundation';
+  if (label === 'final revision') return 'revision';
   return 'regular';
 }
 
@@ -785,7 +859,7 @@ export function expectedSectionTypeForMetasessionType(metasessionType) {
  */
 export function validateSectionTypesForMetasessionType(metasessionType, { slides = null, csvRows = null } = {}) {
   const expected = expectedSectionTypeForMetasessionType(metasessionType);
-  if (expected !== 'revision') return [];
+  if (expected === 'regular') return [];
 
   const errors = [];
   const inspect = (label, item) => {
@@ -795,7 +869,7 @@ export function validateSectionTypesForMetasessionType(metasessionType, { slides
     if (normalized.toLowerCase() !== expected) {
       errors.push(
         `${label}: section_type '${raw}' is invalid for `
-        + "metasession_type 'Final Revision' (must be 'revision').",
+        + `metasession_type '${metasessionTypeLabel(metasessionType)}' (must be '${expected}').`,
       );
     }
   };
@@ -942,9 +1016,14 @@ export function buildRowLookups(rows) {
     const sid = csvCellStr(row.slide_id);
     if (sid && sid.toLowerCase() !== 'new') byId[sid] = row;
     const qid = csvCellStr(row.question_id);
-    if (qid) byId[qid] = row;
+    if (qid) {
+      byId[qid] = row;
+      byId[formatQuestionPartId(qid)] = row;
+    }
     const vid = csvCellStr(row.video_id);
     if (vid && vid.toLowerCase() !== 'new') byId[vid] = row;
+    const aid = csvCellStr(row.activity_id);
+    if (aid && aid.toLowerCase() !== 'new') byId[aid] = row;
   }
   return byId;
 }
@@ -965,9 +1044,14 @@ export function buildRowsByLookupId(rows) {
     const sid = csvCellStr(row.slide_id);
     if (sid && sid.toLowerCase() !== 'new') keys.push(sid);
     const qid = csvCellStr(row.question_id);
-    if (qid) keys.push(qid);
+    if (qid) {
+      keys.push(qid);
+      keys.push(formatQuestionPartId(qid));
+    }
     const vid = csvCellStr(row.video_id);
     if (vid && vid.toLowerCase() !== 'new') keys.push(vid);
+    const aid = csvCellStr(row.activity_id);
+    if (aid && aid.toLowerCase() !== 'new') keys.push(aid);
     for (const key of [...new Set(keys)]) {
       if (!byId[key]) byId[key] = [];
       byId[key].push(row);
@@ -979,7 +1063,7 @@ export function buildRowsByLookupId(rows) {
 export function createOccurrenceRowLookup(rowsById, rowById) {
   const counters = {};
   return function lookupRow(element) {
-    for (const attr of ['slide_id', 'question_id', 'video_id']) {
+    for (const attr of ['slide_id', 'question_id', 'video_id', 'activity_id']) {
       const val = csvCellStr(element.getAttribute(attr));
       if (!val) continue;
       const rowsList = rowsById[val];
@@ -1031,6 +1115,8 @@ export function resolveSlideId(row) {
   if (qid) return qid;
   const vid = csvCellStr(row.video_id);
   if (vid && vid.toLowerCase() !== 'new') return vid;
+  const aid = csvCellStr(row.activity_id);
+  if (aid && aid.toLowerCase() !== 'new') return aid;
   return sid;
 }
 
@@ -1050,10 +1136,10 @@ export function texTypeFromRow(row, xmlSlideType = null) {
   const xmlType = xmlSlideType ? csvCellStr(xmlSlideType).toLowerCase() : '';
 
   if (purpose === 'video' || (row && csvCellStr(row.video_id))) return 'video';
-  if (['example', 'interactive_example', 'instructional', 'title', 'toc', 'thank_you'].includes(purpose)) {
-    return purpose === 'instructional' ? 'image' : purpose;
+  if (['example', 'interactive_example', 'instructional', 'activity', 'title', 'toc', 'thank_you'].includes(purpose)) {
+    return ['instructional', 'activity'].includes(purpose) ? 'image' : purpose;
   }
-  if (xmlType === 'instructional') return 'image';
+  if (['instructional', 'activity'].includes(xmlType)) return 'image';
   if (xmlType) return xmlType;
   if (row) {
     const sn = csvCellStr(row.slide_number);

@@ -176,7 +176,7 @@ function getCsvColumns(isNewMode) {
   ];
   columns.push(...HEADER_FIELDS);
   if (isNewMode) {
-    columns.push('section_type', 'question_role');
+    columns.push('section_type', 'question_role', 'exam_id', 'exam_title');
   }
   columns.push('verbatim_listening', 'verbatim_multipart', 'verbatim_number');
   return columns;
@@ -200,6 +200,8 @@ function newModeBlankRow(slideNumber, slideId, sectionTitle, metasessionId) {
     '',
     slideNumber === 1 ? metasessionId : '',
     '', '', '', '', '', '', '', '', '',
+    '',
+    '',
     '',
     '',
     '',
@@ -309,9 +311,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const hasSlideId = Boolean(slideData.slide_id);
       const hasVideoId = Boolean(slideData.video_id);
       const hasActivityId = Boolean(slideData.activity_id);
+      const hasExamMarker = Boolean(slideData.exam_id || slideData.exam_title || slideData.duration);
 
       const isPlaceholder = hasSectionTitleTag && !hasQuestionId && !hasSlideTitle
-        && !hasSlideId && !hasVideoId && !hasActivityId;
+        && !hasSlideId && !hasVideoId && !hasActivityId && !hasExamMarker;
 
       if (isPlaceholder) {
         const sidErr = sectionIdValidationError(
@@ -335,9 +338,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         thankYouPptSlideNumber = slideNumber;
         log(
           `   [Slide ${slideNumber}] 'Thank You' slide detected `
-          + `(slide_title: '${currentSlideTitle}'). Slides after this will be ignored.`,
+          + `(slide_title: '${currentSlideTitle}'). Post-thank-you exam rows will be retained.`,
         );
-        break;
       }
     }
 
@@ -349,18 +351,11 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
     let thankYouFound = thankYouRawIndex !== null;
     if (thankYouFound) {
-      rawSlides.splice(thankYouRawIndex + 1);
-      const thankYouSlide = rawSlides[rawSlides.length - 1];
+      const thankYouSlide = rawSlides[thankYouRawIndex];
       const standardizedTitle = getStandardizedThankYouTitle(thankYouSlide.slide_title || '');
       if (standardizedTitle) thankYouSlide.slide_title = standardizedTitle;
       thankYouSlide.slide_id = 'new';
       thankYouSlide.section_id = '';
-
-      slideValidationErrors.splice(0, slideValidationErrors.length,
-        ...slideValidationErrors.filter(
-          (err) => validationErrorSlideNumber(err) <= thankYouPptSlideNumber,
-        ),
-      );
     }
 
     let procSectionTitle = '';
@@ -372,7 +367,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
     let lastQuestionRawIndex = -1;
     for (let idx = 0; idx < rawSlides.length; idx += 1) {
-      if ((rawSlides[idx].question_id || '').trim()) {
+      if ((rawSlides[idx].question_id || '').trim() && (rawSlides[idx].question_role || '').toLowerCase() !== 'exam') {
         lastQuestionRawIndex = idx;
       }
     }
@@ -386,8 +381,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const hasSlideId = Boolean(slideData.slide_id);
       const hasVideoId = Boolean(slideData.video_id);
       const hasActivityId = Boolean(slideData.activity_id);
+      const hasExamMarker = Boolean(slideData.exam_id || slideData.exam_title || slideData.duration);
       const isPlaceholder = hasSectionTitleTag && !hasQuestionId && !hasSlideTitle
-        && !hasSlideId && !hasVideoId && !hasActivityId;
+        && !hasSlideId && !hasVideoId && !hasActivityId && !hasExamMarker;
 
       if (isPlaceholder) {
         if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
@@ -406,7 +402,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const isRecap = isRecapTitle(slideData.slide_title || '');
       const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
       let isRootTail = afterLastQuestion && !postQuestionSectionActive;
-      if (isThankYou || isRecap) isRootTail = true;
+      const isAfterThankYou = thankYouRawIndex !== null && slideIdx > thankYouRawIndex;
+      if (isThankYou || isRecap || isAfterThankYou) isRootTail = true;
       if (isRootTail) {
         procSectionTitle = '';
         procSectionId = '';
@@ -421,7 +418,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       } else if (slideData.question_role) {
         const role = (slideData.question_role || '').toLowerCase();
         if (role === 'example') finalSectionTitle = 'Example';
-        else if (['interactive_example', 'interactive example', 'checkpoint', 'practice'].includes(role)) {
+        else if (['interactive_example', 'interactive example', 'checkpoint', 'practice', 'exam'].includes(role)) {
           finalSectionTitle = 'Question';
         }
       } else if (shouldUseSectionPlaceholderTitle(slideData, { isRootTail: isRootTail })) {
@@ -462,7 +459,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       let rowSectionId = (slideData.section_id || '').trim() || procSectionId;
-      if (isThankYou || isRootTail) rowSectionId = '';
+      if (isThankYou || isRootTail || isAfterThankYou) rowSectionId = '';
 
       let rowSectionType = '';
       if (procSectionType && !sectionTypeUsed) {
@@ -485,9 +482,11 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         normalizeVideoThumbnailTs(slideData.timestamp || ''),
         slideData.activity_id || '',
         slideData.verbatim || '',
-        '', '', '', '', '', '', '', '', '', '',
+        '', '', '', '', '', '', '', '', '', slideData.duration || '',
         rowSectionType,
         questionRole,
+        slideData.exam_id || '',
+        slideData.exam_title || '',
         slideData.verbatim_listening || '',
         slideData.verbatim_multipart || '',
         slideData.verbatim_number || '',
@@ -791,6 +790,10 @@ function validateCsvNewModeFromRows(rows) {
     const videoId = csvCellStr(row.video_id);
     const activityId = csvCellStr(row.activity_id);
     const questionRole = csvCellStr(row.question_role);
+    const examId = csvCellStr(row.exam_id);
+    const examTitle = csvCellStr(row.exam_title);
+    const duration = csvCellStr(row.duration);
+    const isExamMarker = Boolean(examId || examTitle || duration) && !qid;
     const sectionId = csvCellStr(row.section_id);
 
     if (sectionId && !isSectionId(sectionId)) {
@@ -816,6 +819,16 @@ function validateCsvNewModeFromRows(rows) {
       }
       if (!idLocations[qid]) idLocations[qid] = [];
       idLocations[qid].push(slideNum);
+    }
+
+    if (isExamMarker) {
+      if (!(examId && examTitle && duration)) {
+        validationErrors.push(`Slide ${slideNum}: exam marker must include exam_id, exam_title, and duration.`);
+      }
+      if (examId && !isTwelveDigitId(examId)) {
+        validationErrors.push(`Invalid format for exam_id '${examId}' on slide ${slideNum}. Must be a 12-digit ID.`);
+      }
+      continue;
     }
 
     if (!rowHasPrimaryId({

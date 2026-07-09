@@ -197,6 +197,12 @@ function slideIdsExcludedFromMainTexXml(xmlRoot) {
   const walk = (elem) => {
     const tag = localXmlTag(elem);
     if (tag === 'slide') {
+      if (
+        elem.getAttribute('slide_category') === 'question' ||
+        ['example', 'interactive_example'].includes(elem.getAttribute('slide_role'))
+      ) {
+        addExclusionKeys(excluded, elem.getAttribute('slide_id'));
+      }
       const hasMedia = mediaAttrs.some((attr) => twelveDigitIdKey(elem.getAttribute(attr)));
       if (hasMedia) {
         addExclusionKeys(excluded, elem.getAttribute('slide_id'));
