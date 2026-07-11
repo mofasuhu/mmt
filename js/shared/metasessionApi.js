@@ -155,7 +155,7 @@ export function buildReportRow(apiData, { extended = false, metasessionId = '' }
     row['Meta Session Number'] = computedNumber != null ? String(computedNumber) : '';
     row['Meta Class Id'] = String(apiData.metaclass_id || '');
     row['Class Type'] = String(apiData.metasession_type || 'regular');
-    row['Language'] = String(languageObj.iso_code || 'en');
+    row['Language'] = String(languageObj.iso_code || '');
     row['Country'] = String(countryObj.iso_code || 'eg');
     row['Academic Year'] = String(apiData.academic_year || '');
     row['Metasession Title'] = strippedTitle;

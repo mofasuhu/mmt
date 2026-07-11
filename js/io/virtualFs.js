@@ -85,6 +85,37 @@ export class VirtualFs {
     return this.files.has(n);
   }
 
+  /**
+   * @param {string} path
+   * @returns {Promise<{ size: number, isFile: boolean, isDir: boolean } | null>}
+   */
+  async stat(path) {
+    const n = normalizePath(path);
+    const m = await this._resolveMount(n);
+    if (m) {
+      if (typeof m.mount.stat === 'function') {
+        return m.mount.stat(m.rel);
+      }
+      if (await m.mount.isFile(m.rel)) {
+        const bytes = await m.mount.readBytes(m.rel);
+        return { size: bytes.byteLength, isFile: true, isDir: false };
+      }
+      if (await m.mount.isDir(m.rel)) {
+        return { size: 0, isFile: false, isDir: true };
+      }
+      return null;
+    }
+
+    const data = this.files.get(n);
+    if (data) {
+      return { size: data.byteLength, isFile: true, isDir: false };
+    }
+    if (this._isDirPath(n)) {
+      return { size: 0, isFile: false, isDir: true };
+    }
+    return null;
+  }
+
   async mkdir(path, { recursive = false } = {}) {
     const n = normalizePath(path);
     const m = await this._resolveMount(n);

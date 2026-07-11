@@ -232,7 +232,12 @@ export async function extractFrame(ctx, videoBytes, timestampSec, videoFileName 
     const outputName = 'frame.png';
     const ts = Math.max(0, timestampSec);
 
-    await ffmpeg.writeFile(inputName, videoBytes);
+    // writeFile transfers the underlying ArrayBuffer to the worker; copy first so
+    // callers (e.g. vfs-backed MP4 bytes) are not left detached / zero-length.
+    const inputBytes = videoBytes instanceof Uint8Array
+      ? videoBytes.slice()
+      : new Uint8Array(videoBytes);
+    await ffmpeg.writeFile(inputName, inputBytes);
 
     const { duration, fps } = await probeVideoMeta(ffmpeg, inputName);
     if (Number.isFinite(duration) && ts >= duration && ctx?.log) {

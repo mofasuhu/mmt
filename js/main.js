@@ -38,8 +38,6 @@ const googleSheets = new GoogleSheets(googleAuth);
 /** @type {MountedDir|import('./io/fsAccess.js').DroppedDir|null} */
 let outputDirHandle = null;
 /** @type {MountedDir|import('./io/fsAccess.js').DroppedDir|null} */
-let clsArchiveHandle = null;
-/** @type {MountedDir|import('./io/fsAccess.js').DroppedDir|null} */
 let slidesArchiveHandle = null;
 let archivesAutoMounted = false;
 
@@ -109,7 +107,6 @@ function buildCtx() {
     googleAuth,
     googleSheets,
     archivePaths: {
-      clsSource: clsArchiveHandle ? 'mount/cls' : null,
       slidesArchive: slidesArchiveHandle ? 'mount/slides' : null,
     },
     config: {
@@ -119,7 +116,6 @@ function buildCtx() {
       sessionsDir: 'sessions',
       csvsDir: 'csvs',
       filesDir: 'files',
-      clsDir: 'CLS',
       sheetId: '1Qc9LrE54LyDzAB1sAyK6iBJDJUbT1Y3sh9-7MNSm85M',
       sheetRange: 'Original_Slide_ID-New_Slide_ID!A:C',
       tempSheetRange: 'temp!A:B',
@@ -267,15 +263,13 @@ async function useSlidesUrl() {
 }
 
 function setArchiveFolderUiVisible(showPickers) {
-  const clsRow = $('#cls-folder-row');
   const slidesRow = $('#slides-folder-row');
-  if (clsRow) clsRow.hidden = !showPickers;
   if (slidesRow) slidesRow.hidden = !showPickers;
 
   const hint = document.querySelector('.folder-hint');
   if (!hint) return;
   if (!showPickers) {
-    hint.textContent = 'Output folder: drag or Browse. CLS and slides archives load automatically from configured paths.';
+    hint.textContent = 'Output folder: drag or Browse. Slides archive loads automatically from configured paths.';
   } else {
     hint.textContent = 'Drag a folder onto a zone, or click Browse.';
   }
@@ -299,24 +293,17 @@ async function mountStaticArchivesIfAvailable() {
     const res = await fetch(statusUrl);
     if (!res.ok) return false;
     const { mounts } = await res.json();
-    if (!mounts?.cls?.ok) {
-      log(`CLS archive not found at ${config.cls_source_path}`);
-      return false;
-    }
     if (!mounts?.slides?.ok) {
       log(`Slides archive not found at ${config.remote_base_path}`);
       return false;
     }
 
-    clsArchiveHandle = new ServerMountedDir('cls', config.cls_source_path, fsApiBase);
     slidesArchiveHandle = new ServerMountedDir('slides', config.remote_base_path, fsApiBase);
     archivesAutoMounted = true;
     mountArchives();
-    setFolderLabel('#cls-folder-name', clsArchiveHandle);
     setFolderLabel('#slides-folder-name', slidesArchiveHandle);
     setArchiveFolderUiVisible(false);
 
-    log(`CLS archive: ${config.cls_source_path}`);
     log(`Slides archive: ${config.remote_base_path}`);
     return true;
   } catch (e) {
@@ -326,9 +313,7 @@ async function mountStaticArchivesIfAvailable() {
 }
 
 function mountArchives() {
-  vfs.unmount('mount/cls');
   vfs.unmount('mount/slides');
-  if (clsArchiveHandle) vfs.mount('mount/cls', clsArchiveHandle);
   if (slidesArchiveHandle) vfs.mount('mount/slides', slidesArchiveHandle);
 }
 
@@ -353,13 +338,6 @@ async function assignOutputDir(handle) {
   }
 }
 
-async function assignClsArchive(handle) {
-  clsArchiveHandle = handle;
-  setFolderLabel('#cls-folder-name', handle);
-  mountArchives();
-  log(`CLS archive: ${handle.label}`);
-}
-
 async function assignSlidesArchive(handle) {
   slidesArchiveHandle = handle;
   setFolderLabel('#slides-folder-name', handle);
@@ -369,10 +347,6 @@ async function assignSlidesArchive(handle) {
 
 async function pickOutputFolder() {
   await assignOutputDir(await pickDirectory({ mode: 'readwrite', label: 'output' }));
-}
-
-async function pickClsArchive() {
-  await assignClsArchive(await pickDirectory({ mode: 'read', label: 'cls' }));
 }
 
 async function pickSlidesArchive() {
@@ -386,15 +360,6 @@ async function dropOutputFolder(event) {
     return;
   }
   await assignOutputDir(dir);
-}
-
-async function dropClsArchive(event) {
-  const dir = await directoryFromDrop(event, { mode: 'read', label: 'cls' });
-  if (!dir) {
-    log('Drop the CLS folder here.');
-    return;
-  }
-  await assignClsArchive(dir);
 }
 
 async function dropSlidesArchive(event) {
@@ -587,16 +552,6 @@ function initDropZones() {
     },
   });
 
-  setupDropZone($('#drop-cls'), {
-    onDrop: async (e) => {
-      try {
-        await dropClsArchive(e);
-      } catch (err) {
-        log(`CLS drop failed: ${err.message}`);
-      }
-    },
-  });
-
   setupDropZone($('#drop-slides'), {
     onDrop: async (e) => {
       try {
@@ -627,7 +582,6 @@ function initUi() {
   });
 
   $('#pick-output').addEventListener('click', () => pickOutputFolder().catch((e) => log(e.message)));
-  $('#pick-cls').addEventListener('click', () => pickClsArchive().catch((e) => log(e.message)));
   $('#pick-slides').addEventListener('click', () => pickSlidesArchive().catch((e) => log(e.message)));
   $('#run-btn').addEventListener('click', runAll);
   $('#validate-only-btn').addEventListener('click', () => runValidateOnlyMode().catch((e) => log(e.message)));

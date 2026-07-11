@@ -6,7 +6,6 @@ export const OUTPUT_FOLDERS_BY_STEP = [
   [3, 'xml'],
   [5, 'tex'],
   [6, 'files'],
-  [7, 'CLS'],
 ];
 
 /**

@@ -8,7 +8,7 @@ function normalizePath(p) {
 
 export class ServerMountedDir {
   /**
-   * @param {'cls'|'slides'} mountName
+   * @param {'slides'} mountName
    * @param {string} label
    * @param {string} [apiBase] - optional origin for /fs API (e.g. CORS worker /archive route)
    */

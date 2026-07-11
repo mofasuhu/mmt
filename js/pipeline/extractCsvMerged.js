@@ -35,11 +35,18 @@ import {
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
   shouldUseSectionPlaceholderTitle,
+  canonicalQuestionSlideTitle,
+  isBilingualThankYouSlide,
+  thankYouTitleForLanguage,
+  isValidRawExamId,
+  localizeCanonicalSlideTitle,
+  requireLanguageFromReportRow,
+  cleanedSessionTitleFromReportRow,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
-import { getNumeralConvention, collectSlideTexts, stripExclamationMarks } from '../pptx/tagParser.js';
+import { getNumeralConvention, collectSlideTexts } from '../pptx/tagParser.js';
 import { buildCsvOutcomes, ValidationAbort } from './extractCsv.js';
 
 const QUESTION_ID_PATTERN = /^\d{12}(\.\d+)?$/;
@@ -84,6 +91,9 @@ const NEW_MODE_MERGED_FIELDS = [
   'activity_id',
   'ar_verbatim', 'en_verbatim',
   'en_metasession_id', 'ar_metasession_id',
+  'en_exam_id', 'ar_exam_id',
+  'en_exam_title', 'ar_exam_title',
+  'en_duration', 'ar_duration',
   'section_type',
 ];
 
@@ -113,7 +123,8 @@ const BASE_COLUMNS = [
 
 const NEW_MODE_COLUMNS = [
   ...BASE_COLUMNS,
-  'metasession_id', 'numerals', 'slide_purpose', 'question_role', 'section_type',
+  'metasession_id', 'numerals', 'slide_purpose', 'question_role',
+  'duration', 'section_type', 'exam_id', 'exam_title',
 ];
 
 const BASE_AR_KEYS = [
@@ -282,10 +293,7 @@ function pptxLanguageStems(pptxFilename) {
 }
 
 function isThankYouSlideMerged(slideData) {
-  const enTitle = stripExclamationMarks((slideData.en_slide_title || '').trim().toLowerCase());
-  const arTitle = stripExclamationMarks((slideData.ar_slide_title || '').trim());
-  const arNormalized = arTitle.replace(/ً/g, '');
-  return enTitle === 'thank you' && arNormalized === 'شكرا جزيلا';
+  return isBilingualThankYouSlide(slideData);
 }
 
 function videoThumbnailTsForSlide(slide, lang) {
@@ -327,7 +335,22 @@ function mergedSyntheticTocRow(baseKeys, lang) {
   };
   const row = rowWithVideoThumbnailTs(slide, baseKeys, lang);
   row[0] = 2;
-  row.push('', '', '', '', '');
+  row.push('', '', '', '', '', '', '', '');
+  return row;
+}
+
+function mergedSyntheticTitleRow(baseKeys, lang, metasessionId, sessionTitle = '') {
+  const slideIdKey = `${lang}_slide_id`;
+  const slideTitleKey = `${lang}_slide_title`;
+  const slide = {
+    slide_number: 1,
+    [slideIdKey]: 'new',
+    [`${lang}_section_id`]: '',
+    [slideTitleKey]: sessionTitle,
+  };
+  const row = rowWithVideoThumbnailTs(slide, baseKeys, lang);
+  row[0] = 1;
+  row.push(metasessionId, '', '', '', '', '', '', '');
   return row;
 }
 
@@ -521,8 +544,8 @@ async function processPresentationLegacy(vfs, filePath, log, options) {
       const isArTitleEmpty = !(currentSlide.ar_slide_title || '').trim();
       const isEnTitleEmpty = !(currentSlide.en_slide_title || '').trim();
       const isPlacementEmpty = !(currentSlide.question_placement || '').trim();
-      if (isArTitleEmpty && isPlacementEmpty) currentSlide.ar_slide_title = 'سؤال';
-      if (isEnTitleEmpty && isPlacementEmpty) currentSlide.en_slide_title = 'Question';
+      if (isArTitleEmpty && isPlacementEmpty) currentSlide.ar_slide_title = canonicalQuestionSlideTitle('ar', 'question');
+      if (isEnTitleEmpty && isPlacementEmpty) currentSlide.en_slide_title = canonicalQuestionSlideTitle('en', 'question');
     }
 
     return extractedData;
@@ -536,7 +559,6 @@ async function processPresentationLegacy(vfs, filePath, log, options) {
 async function processPresentationNewMode(vfs, filePath, log, options) {
   const rawSlides = [];
   let thankYouRawIndex = null;
-  let thankYouPptSlideNumber = null;
   const validationErrorsBySlide = [];
   const warn = (msg) => log(msg);
 
@@ -616,8 +638,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
       if (thankYouRawIndex === null && isThankYouSlideMerged(slideData)) {
         thankYouRawIndex = rawSlides.length - 1;
-        thankYouPptSlideNumber = slideNumber;
-        log(`   Found 'Thank You' slide at slide ${slideNumber}. Slides after this will be ignored.`);
+        log(`   Found thank-you slide at slide ${slideNumber}. Post-thank-you exam tails will be inspected.`);
       }
     }
 
@@ -630,20 +651,16 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
     let thankYouFound = thankYouRawIndex !== null;
     if (thankYouFound) {
-      rawSlides.splice(thankYouRawIndex + 1);
-      const thankYouSlide = rawSlides[rawSlides.length - 1];
-      thankYouSlide.en_slide_title = 'Thank You!';
-      thankYouSlide.ar_slide_title = 'شكرًا جزيلًا';
+      const thankYouSlide = rawSlides[thankYouRawIndex];
+      thankYouSlide.en_slide_title = thankYouTitleForLanguage('en');
+      thankYouSlide.ar_slide_title = thankYouTitleForLanguage('ar');
       thankYouSlide.en_slide_id = 'new';
       thankYouSlide.ar_slide_id = 'new';
       thankYouSlide.en_section_id = '';
       thankYouSlide.ar_section_id = '';
     }
 
-    const maxSlideInclusive = thankYouFound ? thankYouPptSlideNumber : Infinity;
-    const slideValidationErrors = validationErrorsBySlide
-      .filter(([sn]) => sn <= maxSlideInclusive)
-      .map(([, msg]) => msg);
+    const slideValidationErrors = [];
     const sectionIdValidationErrors = [];
 
     let currentArSection = '';
@@ -654,6 +671,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let sectionTypeUsed = false;
     let previousWasCheckpoint = false;
     let postQuestionSectionActive = false;
+    let postThankExamActive = false;
 
     let defaultRequiredCorrect = '3';
     let defaultAttemptWindow = '5';
@@ -673,12 +691,49 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     const processedSlides = [];
     for (let slideIdx = 0; slideIdx < rawSlides.length; slideIdx += 1) {
       const slide = { ...rawSlides[slideIdx] };
+      const slideNumber = slide.slide_number || slideIdx + 1;
+      const isAfterThankYou = thankYouRawIndex !== null && slideIdx > thankYouRawIndex;
+      const questionRole = (slide.question_role || '').trim().toLowerCase().replace(/ /g, '_');
+      const qid = (slide.question_id || '').trim();
+      const arExamValues = [
+        (slide.ar_exam_id || '').trim(),
+        (slide.ar_exam_title || '').trim(),
+        (slide.ar_duration || '').trim(),
+      ];
+      const enExamValues = [
+        (slide.en_exam_id || '').trim(),
+        (slide.en_exam_title || '').trim(),
+        (slide.en_duration || '').trim(),
+      ];
+      const hasExamMarkerTags = arExamValues.some(Boolean) || enExamValues.some(Boolean);
+      const isExamMarker = hasExamMarkerTags && !qid;
+      if (isAfterThankYou) {
+        if (isExamMarker) {
+          if (!(arExamValues.every(Boolean) && enExamValues.every(Boolean))) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: bilingual exam marker after thank-you must include `
+              + 'ar_exam_id, ar_exam_title, ar_duration, en_exam_id, en_exam_title, and en_duration.',
+            );
+            postThankExamActive = false;
+            continue;
+          }
+          postThankExamActive = true;
+        } else if (questionRole === 'exam' && qid) {
+          if (!postThankExamActive) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: exam question after thank-you appears before a valid exam marker.`,
+            );
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
       const hasArSectionTitle = Boolean((slide.ar_section_title || '').trim());
       const hasEnSectionTitle = Boolean((slide.en_section_title || '').trim());
       const isPlaceholder = hasArSectionTitle || hasEnSectionTitle;
 
       if (isPlaceholder) {
-        const slideNumber = slide.slide_number || slideIdx + 1;
         if (hasArSectionTitle) {
           const err = sectionIdValidationError(
             `Slide ${slideNumber}`,
@@ -723,15 +778,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         sectionTypeUsed = true;
       }
 
-      const questionRole = (slide.question_role || '').trim();
       if (questionRole) {
-        if (questionRole === 'example') {
-          slide.ar_slide_title = 'مثال';
-          slide.en_slide_title = 'Example';
-        } else if (['interactive_example', 'checkpoint', 'practice'].includes(questionRole)) {
-          slide.ar_slide_title = 'سؤال';
-          slide.en_slide_title = 'Question';
-        }
+        slide.ar_slide_title = canonicalQuestionSlideTitle('ar', questionRole);
+        slide.en_slide_title = canonicalQuestionSlideTitle('en', questionRole);
 
         if (questionRole === 'checkpoint') {
           slide.question_placement = 'ai';
@@ -801,10 +850,17 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       processedSlides.push(slide);
     }
 
+    const keptSlideNumbers = new Set(processedSlides.map((slide) => slide.slide_number).filter(Boolean));
+    keptSlideNumbers.add(1);
+    keptSlideNumbers.add(2);
+    const retainedStructuralErrors = validationErrorsBySlide
+      .filter(([sn]) => keptSlideNumbers.has(sn))
+      .map(([, msg]) => msg);
+
     return {
       processedSlides,
       thankYouFound,
-      slideValidationErrors: slideValidationErrors.concat(sectionIdValidationErrors),
+      slideValidationErrors: retainedStructuralErrors.concat(slideValidationErrors, sectionIdValidationErrors),
     };
   } catch (e) {
     log(`Could not process file ${basename(filePath)}. Error: ${e.message}`);
@@ -916,6 +972,10 @@ function validateCsvNewModeFromRows(rows) {
     const activityId = csvCellStr(row.activity_id);
     const questionRole = csvCellStr(row.question_role);
     const sectionId = csvCellStr(row.section_id);
+    const examId = csvCellStr(row.exam_id);
+    const examTitle = csvCellStr(row.exam_title);
+    const duration = csvCellStr(row.duration);
+    const isExamMarker = Boolean(examId || examTitle || duration) && !qid;
 
     if (sectionId && !isSectionId(sectionId)) {
       validationErrors.push(
@@ -940,6 +1000,16 @@ function validateCsvNewModeFromRows(rows) {
         if (!idLocations[qid]) idLocations[qid] = [];
         idLocations[qid].push(slideNum);
       }
+    }
+
+    if (isExamMarker) {
+      if (!(examId && examTitle && duration)) {
+        validationErrors.push(`Row ${slideNum}: exam marker must include exam_id, exam_title, and duration.`);
+      }
+      if (examId && !isValidRawExamId(examId)) {
+        validationErrors.push(`Row ${slideNum}: Invalid format for exam_id '${examId}'. Must be a 12-digit ID or 'new'.`);
+      }
+      continue;
     }
 
     if (!rowHasPrimaryId({
@@ -1116,7 +1186,6 @@ async function applyQuestionTypeDuplication(vfs, csvPath, log, config, subject =
 
 async function applySessionDetailsTranslations(vfs, csvPath, metasessionId, sessionReportMap, log) {
   try {
-    const isArabic = csvPath.endsWith('_ar.csv');
     let subject = '';
     let grade = null;
 
@@ -1132,15 +1201,28 @@ async function applySessionDetailsTranslations(vfs, csvPath, metasessionId, sess
     }
 
     const { headers, rows } = await readCsvFromVfs(vfs, csvPath);
-    const reportLanguage = sessionReportMap?.[metasessionId]?.Language || '';
-    const csvLanguage = reportLanguage || (isArabic ? 'ar' : 'en');
+    const reportRow = sessionReportMap?.[metasessionId] || {};
+    let csvLanguage = requireLanguageFromReportRow(reportRow);
+    const sessionTitle = cleanedSessionTitleFromReportRow(reportRow);
     let translationCount = 0;
 
     for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
       const row = rows[rowIdx];
       const sectionTitle = csvCellStr(row.section_title);
-      const slideId = csvCellStr(row.slide_id).toLowerCase();
       const slideNumber = csvCellStr(row.slide_number);
+
+      if (slideNumber === '1' && sessionTitle) {
+        const colonIdx = sessionTitle.indexOf(':');
+        const cleanedTitle = colonIdx >= 0
+          ? sessionTitle.slice(colonIdx + 1).trim()
+          : sessionTitle;
+        row.section_title = cleanedTitle;
+        log(`   [Slide 1 Title] Set to '${cleanedTitle}' from metasession API`);
+        if (rowIdx === 0 && grade != null && subject) {
+          row.numerals = getNumeralConvention(subject, grade);
+        }
+        continue;
+      }
 
       if (slideNumber === '2') {
         row.section_title = tocTitleForLanguage(csvLanguage);
@@ -1148,14 +1230,10 @@ async function applySessionDetailsTranslations(vfs, csvPath, metasessionId, sess
         continue;
       }
 
-      if (isArabic) {
-        if (sectionTitle.toLowerCase() === 'example') {
-          row.section_title = 'مثال';
-          translationCount += 1;
-        } else if (sectionTitle.toLowerCase() === 'question' && slideId === 'new') {
-          row.section_title = 'سؤال';
-          translationCount += 1;
-        }
+      const localizedTitle = localizeCanonicalSlideTitle(sectionTitle, csvLanguage);
+      if (localizedTitle !== sectionTitle) {
+        row.section_title = localizedTitle;
+        translationCount += 1;
       }
 
       if (rowIdx === 0 && grade != null && subject) {
@@ -1166,7 +1244,7 @@ async function applySessionDetailsTranslations(vfs, csvPath, metasessionId, sess
     const dataRows = rows.map((row) => headers.map((col) => row[col] ?? ''));
     await vfs.write(csvPath, rowsToCsv(headers, dataRows));
 
-    if (isArabic && translationCount > 0) {
+    if (csvLanguage === 'ar' && translationCount > 0) {
       log(`   Applied ${translationCount} translation(s) for Arabic CSV.`);
     }
     log('   Applied post-processing (translations and numeral conventions).');
@@ -1203,40 +1281,29 @@ async function collectSlideIdRowsFromCsv(vfs, csvPath, log) {
   }
 }
 
-function getFirstSlideTitleFromReport(reportRow) {
-  let firstSlideTitle = csvCellStr(reportRow?.Title);
-  if (!firstSlideTitle && reportRow) {
-    const reportValues = Object.values(reportRow);
-    if (reportValues.length > 12) firstSlideTitle = csvCellStr(reportValues[12]);
-  }
-  if (firstSlideTitle.includes(':')) {
-    return firstSlideTitle.split(':', 2)[1].trim();
-  }
-  return firstSlideTitle;
-}
-
-function buildNewModeLangRows(slides, lang, metaId, firstSlideTitle) {
+function buildNewModeLangRows(slides, lang, metaId, sessionReportMap = {}) {
   const baseKeys = lang === 'ar' ? BASE_AR_KEYS : BASE_EN_KEYS;
-  const slideTitleKey = lang === 'ar' ? 'ar_slide_title' : 'en_slide_title';
   const purposeKey = lang === 'ar' ? 'ar_slide_purpose' : 'en_slide_purpose';
-  const rows = [];
+  const durationKey = `${lang}_duration`;
+  const examIdKey = `${lang}_exam_id`;
+  const examTitleKey = `${lang}_exam_title`;
+  const sessionTitle = cleanedSessionTitleFromReportRow(sessionReportMap[metaId] || {});
+  const rows = [
+    mergedSyntheticTitleRow(baseKeys, lang, metaId, sessionTitle),
+    mergedSyntheticTocRow(baseKeys, lang),
+  ];
 
-  for (let idx = 0; idx < slides.length; idx += 1) {
-    const slide = slides[idx];
+  for (const slide of slides) {
+    if (['1', '2'].includes(csvCellStr(slide.slide_number))) continue;
     const row = rowWithVideoThumbnailTs(slide, baseKeys, lang);
-    if (idx === 0 && firstSlideTitle) {
-      row[baseKeys.indexOf(slideTitleKey)] = firstSlideTitle;
-    }
-    if (idx === 0) {
-      row.push(metaId, '');
-    } else {
-      row.push('', '');
-    }
+    row.push('', '');
     row.push(slide[purposeKey] || '');
     row.push(slide.question_role || '');
+    row.push(slide[durationKey] || '');
     row.push(slide.section_type || '');
+    row.push(slide[examIdKey] || '');
+    row.push(slide[examTitleKey] || '');
     rows.push(row);
-    if (idx === 0) rows.push(mergedSyntheticTocRow(baseKeys, lang));
   }
   return rows;
 }
@@ -1451,7 +1518,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
 
       if (!thankYouFound) {
         const thankYouErr = [
-          "Missing 'Thank You' slide (en_slide_title='Thank You', ar_slide_title='شكرًا جزيلًا')",
+          'Missing thank-you slide. Expected a supported thank-you title in either bilingual title field.',
         ];
         processingSummary.push({
           filename: `${arPptxStem}_ar.csv (Not Created)`,
@@ -1584,8 +1651,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
               abortPipeline(log, `Invalid section_type for metasession ${arMetaId}`, arSectionTypeErrors);
             }
           } else {
-            const arFirstTitle = getFirstSlideTitleFromReport(arReport);
-            const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, arFirstTitle);
+            const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, sessionReportMap);
             const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
             const arResult = await processAndValidateCsvNewMode(
               vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
@@ -1634,8 +1700,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
               abortPipeline(log, `Invalid section_type for metasession ${enMetaId}`, enSectionTypeErrors);
             }
           } else {
-            const enFirstTitle = getFirstSlideTitleFromReport(enReport);
-            const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, enFirstTitle);
+            const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, sessionReportMap);
             const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
             const enResult = await processAndValidateCsvNewMode(
               vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,

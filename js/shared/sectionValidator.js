@@ -89,7 +89,7 @@ function formatExtraApiQuestionError(sectionId, unusedQids) {
 
 export async function initSectionsValidationResults(vfs) {
   const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: every CSV question_id must appear in section API question_ids, and every section API question_id must appear in the CSV.\nsection_type=revision: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
+  const text = `${'='.repeat(80)}\nSECTION vs METASESSION VALIDATION RESULTS\n${'='.repeat(80)}\nReport started: ${stamp}\nThis file lists every field compared between the QMS section API and the metasession API, plus question_id membership checks.\nQuestion-id checks run from xml_builder after translation (when applicable).\nsection_type=regular: every CSV question_id must appear in section API question_ids, and every section API question_id must appear in the CSV.\nsection_type=revision: question-id cross-check is skipped.\nsection_type=foundation: question-id cross-check is skipped.\nStatus OK = values match (case-insensitive). MISMATCH = differ.\nSKIP = one or both sides empty; not treated as a failure.\n\n`;
   await vfs.writeText(SECTIONS_VALIDATION_RESULTS_FILE, text);
 }
 
@@ -231,7 +231,7 @@ export async function validateSectionAgainstMetasession(
       block += `\nSummary: ${okCount} matched, ${mismatchCount} mismatch(es), ${fieldRows.length - okCount - mismatchCount} skipped.\n\n`;
       block += '--- Question IDs ---\n';
       if (questionCheckSkipped) {
-        block += '  Question-id cross-check SKIPPED (section_type=revision).\n\n';
+        block += '  Question-id cross-check SKIPPED (section_type=revision or foundation).\n\n';
       } else {
         if (questionIdsNote) block += `  ${questionIdsNote}\n`;
         block += `  CSV and section API question_ids must match exactly (section_type=${normalizedSectionType}); unused API ids fail validation.\n`;

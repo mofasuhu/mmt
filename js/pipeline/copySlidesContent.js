@@ -216,33 +216,6 @@ async function flushSheetLogBuffer(ctx) {
 
 /**
  * @param {object} ctx
- * @param {string} clsDest
- */
-async function setupCls(ctx, clsDest) {
-  const { vfs, archivePaths, log } = ctx;
-  const clsSource = archivePaths.clsSource;
-
-  log('--- Setting up CLS Folder ---');
-  if (!(await vfs.exists(clsSource))) {
-    log(`Error: Source CLS path not found at ${clsSource}`);
-    return false;
-  }
-
-  try {
-    if (await vfs.exists(clsDest)) {
-      await vfs.remove(clsDest, { recursive: true });
-    }
-    await vfs.copyTree(clsSource, clsDest);
-    log(`Successfully copied CLS folder to ${clsDest}`);
-    return true;
-  } catch (e) {
-    log(`Error copying CLS folder: ${e.message}`);
-    return false;
-  }
-}
-
-/**
- * @param {object} ctx
  * @returns {Promise<string | null>}
  */
 async function fetchNewId(ctx) {
@@ -519,16 +492,10 @@ async function reassignIdsFromTempTab(ctx, filesDir) {
 export async function runCopySlidesContent(ctx) {
   const { vfs, log, config, archivePaths } = ctx;
   const filesDir = config.filesDir || 'files';
-  const clsDest = config.clsDir || 'CLS';
   const slidesArchive = archivePaths.slidesArchive;
 
   idMappingCache = null;
   sheetLogBuffer = [];
-
-  if (!(await setupCls(ctx, clsDest))) {
-    log('Aborting process due to CLS setup failure.');
-    return { ok: false };
-  }
 
   if (!(await vfs.isDir(filesDir))) {
     log(`Error: The 'files' directory was not found in ${filesDir}`);

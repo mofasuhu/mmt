@@ -12,8 +12,11 @@ import {
   planPackageSlideIds,
   renderTocEntriesTex,
   rowsToCsv,
+  THANK_YOU_TITLE_BY_LANGUAGE,
   writeRemoteSourceSlideIdMarker,
+  requireLanguageFromReportRow,
 } from '../shared/sessionCsv.js';
+import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 
 const ARABIC_SESSION_NUMBERS = {
   1: 'الأولى', 2: 'الثانية', 3: 'الثالثة', 4: 'الرابعة', 5: 'الخامسة',
@@ -37,12 +40,9 @@ const ARABIC_SESSION_NUMBERS = {
 };
 
 const THANK_YOU_MESSAGES = {
-  en: '\\ThankYou{Thank You!}',
-  ar: '\\ThankYou{شكرًا جزيلًا}',
-  fr: '\\ThankYou{Merci}',
-  es: '\\ThankYou{¡Gracias!}',
-  de: '\\ThankYou{Vielen Dank}',
-  it: '\\ThankYou{Grazie}',
+  ...Object.fromEntries(
+    Object.entries(THANK_YOU_TITLE_BY_LANGUAGE).map(([lang, title]) => [lang, `\\ThankYou{${title}}`]),
+  ),
 };
 
 /**
@@ -254,16 +254,6 @@ export async function runMakeFiles(ctx) {
 
     const content = await vfs.readText(filePath);
 
-    const langMatch = /\\languageofinstruction\{(\w+)\}/.exec(content);
-    const language = langMatch ? langMatch[1] : 'en';
-    const isArabic = language === 'ar';
-
-    const subjectMatch = /\\subject\{(.*?)\}/.exec(content);
-    const subject = subjectMatch ? subjectMatch[1] : '';
-
-    const titleMatch = /\\sessiontitle\{(.*?)\}/.exec(content);
-    const title = titleMatch ? titleMatch[1] : '';
-
     const sessionMatch = /\\metasessionID\{(\d+)\}/.exec(content);
     if (!sessionMatch) {
       log(`⚠️ Warning: No '\\metasessionID' found in ${filename}. Skipping.`);
@@ -271,6 +261,33 @@ export async function runMakeFiles(ctx) {
     }
 
     const metasessionId = sessionMatch[1];
+    const reportRow = await getMetasessionReportRow(metasessionId, {
+      fetchFn: ctx.fetchFn,
+      log,
+      fatal: true,
+    });
+    let language;
+    try {
+      language = requireLanguageFromReportRow(reportRow);
+    } catch (e) {
+      log(`⚠️ Warning: ${e.message} in ${filename}. Skipping.`);
+      continue;
+    }
+    const isArabic = language === 'ar';
+
+    const langMatch = /\\languageofinstruction\{(\w+)\}/.exec(content);
+    if (langMatch && langMatch[1] !== language) {
+      log(
+        `   └── ⚠️ Note: TeX languageofinstruction '${langMatch[1]}' `
+        + `differs from metasession API language '${language}' (using API).`,
+      );
+    }
+
+    const subjectMatch = /\\subject\{(.*?)\}/.exec(content);
+    const subject = subjectMatch ? subjectMatch[1] : '';
+
+    const titleMatch = /\\sessiontitle\{(.*?)\}/.exec(content);
+    const title = titleMatch ? titleMatch[1] : '';
     const sessionFolderPath = `files/${metasessionId}`;
     await vfs.mkdir(sessionFolderPath, { recursive: true });
 

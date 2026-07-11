@@ -36,6 +36,10 @@ import {
   validateSectionTypesForMetasessionType,
   normalizeVideoThumbnailTs,
   shouldUseSectionPlaceholderTitle,
+  canonicalQuestionSlideTitle,
+  isValidRawExamId,
+  localizeCanonicalSlideTitle,
+  requireLanguageFromReportRow,
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
@@ -51,7 +55,6 @@ import {
   extractVerbatimMultipart,
   extractInfoFromSlide,
   validationErrorSlideNumber,
-  languageFromPresentationFilename,
   detectNewMode,
   collectSlideTexts,
 } from '../pptx/tagParser.js';
@@ -220,6 +223,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
   let thankYouRawIndex = null;
   let thankYouPptSlideNumber = null;
   const slideValidationErrors = [];
+  const apiOpts = {
+    log,
+    fetchFn: options?.fetchFn || options?.config?.fetchFn || fetch,
+  };
 
   const warn = (msg) => log(msg);
 
@@ -349,10 +356,24 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       );
     }
 
+    let sessionLang = '';
+    if (metasessionId) {
+      try {
+        const reportRow = await getMetasessionReportRow(metasessionId, { ...apiOpts, fatal: false });
+        sessionLang = requireLanguageFromReportRow(reportRow);
+      } catch (e) {
+        slideValidationErrors.push(e.message);
+      }
+    } else {
+      slideValidationErrors.push(
+        'Cannot determine session language: metasession_id is missing on slide 1.',
+      );
+    }
+
     let thankYouFound = thankYouRawIndex !== null;
     if (thankYouFound) {
       const thankYouSlide = rawSlides[thankYouRawIndex];
-      const standardizedTitle = getStandardizedThankYouTitle(thankYouSlide.slide_title || '');
+      const standardizedTitle = getStandardizedThankYouTitle(thankYouSlide.slide_title || '', sessionLang);
       if (standardizedTitle) thankYouSlide.slide_title = standardizedTitle;
       thankYouSlide.slide_id = 'new';
       thankYouSlide.section_id = '';
@@ -364,6 +385,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let sectionTypeUsed = false;
     let procPreviousCheckpoint = false;
     let postQuestionSectionActive = false;
+    let postThankExamActive = false;
 
     let lastQuestionRawIndex = -1;
     for (let idx = 0; idx < rawSlides.length; idx += 1) {
@@ -403,6 +425,35 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
       let isRootTail = afterLastQuestion && !postQuestionSectionActive;
       const isAfterThankYou = thankYouRawIndex !== null && slideIdx > thankYouRawIndex;
+      const questionRole = (slideData.question_role || '').toLowerCase().replace(/ /g, '_');
+      const qid = (slideData.question_id || '').trim();
+      const examMarkerValues = [
+        (slideData.exam_id || '').trim(),
+        (slideData.exam_title || '').trim(),
+        (slideData.duration || '').trim(),
+      ];
+      const isExamMarker = examMarkerValues.some(Boolean) && !qid;
+      if (isAfterThankYou) {
+        if (isExamMarker) {
+          if (!examMarkerValues.every(Boolean)) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: exam marker after thank-you must include exam_id, exam_title, and duration.`,
+            );
+            postThankExamActive = false;
+            continue;
+          }
+          postThankExamActive = true;
+        } else if (questionRole === 'exam' && qid) {
+          if (!postThankExamActive) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: exam question after thank-you appears before a valid exam marker.`,
+            );
+            continue;
+          }
+        } else {
+          continue;
+        }
+      }
       if (isThankYou || isRecap || isAfterThankYou) isRootTail = true;
       if (isRootTail) {
         procSectionTitle = '';
@@ -416,11 +467,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         const vt = (slideData.video_title || '').trim() || (slideData.slide_title || '').trim();
         if (vt) finalSectionTitle = vt;
       } else if (slideData.question_role) {
-        const role = (slideData.question_role || '').toLowerCase();
-        if (role === 'example') finalSectionTitle = 'Example';
-        else if (['interactive_example', 'interactive example', 'checkpoint', 'practice', 'exam'].includes(role)) {
-          finalSectionTitle = 'Question';
-        }
+        finalSectionTitle = canonicalQuestionSlideTitle(sessionLang, questionRole);
       } else if (shouldUseSectionPlaceholderTitle(slideData, { isRootTail: isRootTail })) {
         finalSectionTitle = procSectionTitle;
       } else if (hasSlideTitle) {
@@ -428,7 +475,6 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       let questionPlacement = '';
-      const questionRole = (slideData.question_role || '').toLowerCase();
       if (questionRole === 'checkpoint') questionPlacement = 'ai';
       else if (questionRole === 'practice') questionPlacement = 'homework';
 
@@ -450,7 +496,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       let slideId = slideData.slide_id || '';
       if (isThankYou) {
         slideId = 'new';
-        const standardizedTitle = getStandardizedThankYouTitle(slideData.slide_title || '');
+        const standardizedTitle = getStandardizedThankYouTitle(slideData.slide_title || '', sessionLang);
         if (standardizedTitle) finalSectionTitle = standardizedTitle;
       }
 
@@ -503,8 +549,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       if (isSectionId(sid)) procSectionId = sid;
     }
 
-    const deckLang = languageFromPresentationFilename(filePath);
-    const tocTitle = tocTitleForLanguage(deckLang || 'en');
+    const tocTitle = tocTitleForLanguage(sessionLang);
     const syntheticTitle = newModeBlankRow(1, 'new', '', metasessionId);
     const syntheticToc = newModeBlankRow(2, 'new', tocTitle, metasessionId);
     extractedRows.unshift(syntheticToc);
@@ -597,19 +642,21 @@ async function processPresentation(vfs, filePath, log, options) {
       extractedRows.push(row);
     }
 
-    for (const row of extractedRows) {
-      const isSectionTitleEmpty = !row[3];
-      const isQuestionPlacementEmpty = !row[5];
-      if (isSectionTitleEmpty && isQuestionPlacementEmpty) {
-        row[3] = 'Question';
-      }
-    }
-
     return { extractedRows, headerMetadata };
   } catch (e) {
     log(`Could not process file ${basename(filePath)}. Error: ${e.message}`);
     console.error(e);
     return null;
+  }
+}
+
+function applyLegacyQuestionTitleFallback(extractedRows, sessionLang) {
+  for (const row of extractedRows) {
+    const isSectionTitleEmpty = !row[3];
+    const isQuestionPlacementEmpty = !row[5];
+    if (isSectionTitleEmpty && isQuestionPlacementEmpty) {
+      row[3] = canonicalQuestionSlideTitle(sessionLang, 'question');
+    }
   }
 }
 
@@ -825,8 +872,8 @@ function validateCsvNewModeFromRows(rows) {
       if (!(examId && examTitle && duration)) {
         validationErrors.push(`Slide ${slideNum}: exam marker must include exam_id, exam_title, and duration.`);
       }
-      if (examId && !isTwelveDigitId(examId)) {
-        validationErrors.push(`Invalid format for exam_id '${examId}' on slide ${slideNum}. Must be a 12-digit ID.`);
+      if (examId && !isValidRawExamId(examId)) {
+        validationErrors.push(`Invalid format for exam_id '${examId}' on slide ${slideNum}. Must be a 12-digit ID or 'new'.`);
       }
       continue;
     }
@@ -940,11 +987,10 @@ async function expandQuestionIdsFromApi(vfs, csvPath, log, config, subject = '')
 
 async function applyLanguageAndNumerals(vfs, csvPath, reportRow, log) {
   if (!reportRow) {
-    log('   [Warning] Cannot apply language/numerals - missing metasession data');
-    return;
+    throw new Error('Cannot apply language/numerals - missing metasession API report');
   }
 
-  const language = csvCellStr(reportRow.Language).toLowerCase();
+  const language = requireLanguageFromReportRow(reportRow);
   const subject = csvCellStr(reportRow.Subject);
   const gradeStr = csvCellStr(reportRow.Grade);
   const sessionTitle = csvCellStr(reportRow.Title);
@@ -966,7 +1012,6 @@ async function applyLanguageAndNumerals(vfs, csvPath, reportRow, log) {
 
     for (const row of rows) {
       const sectionTitle = csvCellStr(row.section_title);
-      const slideId = csvCellStr(row.slide_id).toLowerCase();
       const slideNum = csvCellStr(row.slide_number);
 
       if (slideNum === '1' && sessionTitle) {
@@ -980,12 +1025,8 @@ async function applyLanguageAndNumerals(vfs, csvPath, reportRow, log) {
         row.section_title = tocTitleForLanguage(language);
         row.slide_id = 'new';
         log(`   [Slide 2 TOC] Set to '${row.section_title}'`);
-      } else if (language === 'ar') {
-        if (sectionTitle.toLowerCase() === 'example') {
-          row.section_title = 'مثال';
-        } else if (sectionTitle.toLowerCase() === 'question' && slideId === 'new') {
-          row.section_title = 'سؤال';
-        }
+      } else {
+        row.section_title = localizeCanonicalSlideTitle(sectionTitle, language);
       }
 
       if (csvCellStr(row.metasession_id)) {
@@ -1073,7 +1114,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
   const apiOpts = { log, fetchFn };
   const sessionsPath = config.sessionsPath || 'sessions';
   const csvsPath = config.csvsPath || 'csvs';
-  const pptxOptions = { JSZip: config.JSZip };
+  const pptxOptions = { JSZip: config.JSZip, fetchFn };
 
   const filesToProcess = [];
   for (let filename of pptxFilenames) {
@@ -1137,7 +1178,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
 
       if (!thankYouFound) {
         abortPipeline(log, `Missing 'Thank You' slide in ${filename}`, [
-          "Missing 'Thank You' slide. Expected slide_title = 'Thank You' or 'شكرًا جزيلًا'.",
+          'Missing thank-you slide. Expected a supported thank-you title in the session language.',
         ]);
       }
 
@@ -1299,6 +1340,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       let savePermission = true;
       const validationErrors = [];
       let legacyPptxErrors = [];
+      let reportRow = null;
 
       const numeralsVal = csvCellStr(headerMetadata.numerals);
       if (numeralsVal) {
@@ -1348,6 +1390,11 @@ export async function runExtractCsv(ctx, pptxFilenames) {
       }
 
       if (savePermission) {
+        if (reportRow) {
+          const sessionLang = requireLanguageFromReportRow(reportRow);
+          applyLegacyQuestionTitleFallback(allSlidesData, sessionLang);
+        }
+
         const saveFilepath = joinPath(csvsPath, finalSaveName);
         log(`-> Saving to ${finalSaveName}...`);
         await saveToCsv(vfs, saveFilepath, allSlidesData, false, log);

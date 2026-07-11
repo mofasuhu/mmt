@@ -5,11 +5,13 @@
 import {
   HEADER_FIELDS,
   VALID_QUESTION_ROLES,
-  THANK_YOU_PATTERNS,
-  THANK_YOU_STANDARDIZED,
   SECTION_TITLE_TARGET_RGB,
 } from '../shared/constants.js';
-import { normalizeQuestionIdBase } from '../shared/sessionCsv.js';
+import {
+  isThankYouTitle,
+  normalizeQuestionIdBase,
+  standardizedThankYouTitle,
+} from '../shared/sessionCsv.js';
 
 const ARABIC_RE = /[\u0600-\u06FF]/;
 const SCIENCE_KEYWORDS = ['علوم', 'فيزياء', 'كيمياء', 'أحياء'];
@@ -21,15 +23,11 @@ export function stripExclamationMarks(text) {
 }
 
 export function isThankYouSlide(slideTitle) {
-  if (!slideTitle) return false;
-  const normalized = stripExclamationMarks(slideTitle.trim()).trim().toLowerCase();
-  return THANK_YOU_PATTERNS.includes(normalized);
+  return isThankYouTitle(slideTitle);
 }
 
-export function getStandardizedThankYouTitle(slideTitle) {
-  if (!slideTitle) return null;
-  const normalized = stripExclamationMarks(slideTitle.trim()).trim().toLowerCase();
-  return THANK_YOU_STANDARDIZED[normalized] || null;
+export function getStandardizedThankYouTitle(slideTitle, language = 'en') {
+  return standardizedThankYouTitle(language, slideTitle);
 }
 
 export function getNumeralConvention(subject, grade) {
@@ -245,13 +243,9 @@ export function validationErrorSlideNumber(message) {
 }
 
 export function languageFromPresentationFilename(filePath) {
-  const stem = filePath.replace(/\.[^.]+$/, '').split(/[/\\]/).pop().toLowerCase();
-  for (const suffix of ['_ar', '_en', '_fr', '_es', '_it', '_de']) {
-    if (stem.endsWith(suffix)) {
-      return suffix.slice(1);
-    }
-  }
-  return '';
+  throw new Error(
+    'languageFromPresentationFilename is deprecated; use requireLanguageFromReportRow() with metasession API data instead',
+  );
 }
 
 export function detectNewMode(slideTexts) {

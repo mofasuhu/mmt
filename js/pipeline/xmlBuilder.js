@@ -18,6 +18,12 @@ import {
   writeSessionRows,
   isRecapTitle,
   processQuestionIdsFromApi,
+  isNewId,
+  isPlainTwelveDigitId,
+  thankYouTitleForLanguage,
+  isThankYouTitle,
+  requireLanguageFromApiData,
+  cleanedSessionTitleFromReportRow,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -109,8 +115,7 @@ function buildMetasessionRootAttributes(apiData, detailsRow) {
       ? String(termObj.id)
       : String(details.Term ?? '');
 
-  const languageObj = api.language || {};
-  const language = String(languageObj.iso_code || details.Language || 'en');
+  const language = requireLanguageFromApiData(api);
 
   const countryObj = api.country || {};
   const country = String(countryObj.iso_code || details.Country || 'eg');
@@ -684,7 +689,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   metasession.appendChild(createEl(doc, 'metasession_title', {}, metasessionTitleText));
 
   const subject = metaAttributes.subject || '';
-  const lang = metaAttributes.language || 'en';
+  const lang = metaAttributes.language;
 
   const initialSlides = sessionRowsProcessed.slice(0, 2);
   let remaining = sessionRowsProcessed.slice(2);
@@ -700,13 +705,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   let lastRow = null;
   let hasThankYou = false;
 
-  const thankPos = remaining.findIndex((row) => {
-    const title = String(row.section_title ?? '');
-    const stripped = stripTashkeel(title).toLowerCase();
-    return stripped === 'thank you!' ||
-      stripped === 'شكرا جزيلا' ||
-      ['Thank You!', 'thank you!', 'Thank you!', 'شكرًا جزيلًا', 'شكرًا جزيلًا!'].includes(title);
-  });
+  const thankPos = remaining.findIndex((row) => isThankYouTitle(row.section_title));
   if (thankPos >= 0) {
     lastRow = remaining[thankPos];
     hasThankYou = true;
@@ -764,7 +763,11 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
 
     const slideType = i === 0 ? 'title' : 'toc';
-    const slideTitle = i === 1 ? tocTitleForLanguage(lang) : String(row.section_title ?? '');
+    const slideTitle = i === 1
+      ? tocTitleForLanguage(lang)
+      : i === 0
+        ? (csvCellStr(metasessionTitleText) || metasessionTitleText)
+        : csvCellStr(row.section_title);
 
     if (slideId) {
       metasession.appendChild(
@@ -775,6 +778,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
         }),
       );
     }
+
+    sessionRowsProcessed[rowIndex].section_title = slideTitle;
   }
 
   let currentSectionElement = null;
@@ -1083,8 +1088,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     ) {
       sessionRowsProcessed[thankIdx].slide_id = thankSlideId;
     }
-    let thankTitle = csvCellStr(lastRow.section_title);
-    if (!thankTitle) thankTitle = lang === 'ar' ? 'شكرًا جزيلًا' : 'Thank You!';
+    const thankTitle = thankYouTitleForLanguage(lang);
     metasession.appendChild(
       createEl(doc, 'slide', {
         slide_id: thankSlideId,
@@ -1097,10 +1101,22 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   }
 
   let currentExam = null;
+  const examIdsToMint = postThankYouRows
+    .filter((row) => isExamMarkerRow(row) && isNewId(row.exam_id))
+    .map((row) => csvCellStr(row.exam_id));
+  const mintedExamIds = await getNewIds(examIdsToMint.length, fetchFn);
+  let mintedExamIndex = 0;
   for (const row of postThankYouRows) {
     if (isExamMarkerRow(row)) {
+      let examId = csvCellStr(row.exam_id);
+      if (isNewId(examId)) {
+        examId = mintedExamIds[mintedExamIndex] || '';
+        mintedExamIndex += 1;
+        if (isPlainTwelveDigitId(examId)) row.exam_id = examId;
+        else log(`Could not mint exam_id for exam marker on slide ${row.slide_number || '?'}; leaving blank.`);
+      }
       currentExam = createEl(doc, 'exam', {
-        exam_id: csvCellStr(row.exam_id),
+        exam_id: examId,
         exam_title: csvCellStr(row.exam_title),
         duration: csvCellStr(row.duration),
       });

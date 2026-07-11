@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLS_SOURCE_PATH, REMOTE_BASE_PATH } from '../archivePaths.mjs';
+import { REMOTE_BASE_PATH } from '../archivePaths.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -47,7 +47,6 @@ const CORS = {
 };
 
 const FS_MOUNTS = {
-  cls: CLS_SOURCE_PATH,
   slides: REMOTE_BASE_PATH,
 };
 
@@ -325,7 +324,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`MMT dev server: http://${HOST}:${PORT}`);
   console.log('Same-origin API proxy: /proxy?url=https://...');
-  console.log(`Local archives: CLS=${CLS_SOURCE_PATH}`);
   console.log(`Local archives: slides=${REMOTE_BASE_PATH}`);
   console.log('Open the URL above — no CORS proxy field needed.');
 });

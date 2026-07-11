@@ -14,6 +14,7 @@ import {
   slideTitleFromRow,
   slideNumberFromRow,
   xmlRoleFromSlideElement,
+  localizeCanonicalSlideTitle,
 } from '../shared/sessionCsv.js';
 
 /**
@@ -44,7 +45,11 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
   }
 
   const metaAttrs = root.attributes;
-  const lang = metaAttrs.getNamedItem('language')?.value || 'en';
+  const langAttr = metaAttrs.getNamedItem('language')?.value;
+  if (!langAttr || !String(langAttr).trim()) {
+    return 'Error: XML missing language attribute from metasession API';
+  }
+  const lang = String(langAttr).trim();
   const numerals = csvRows.length ? getNumeralsFromRows(csvRows) : 'european';
 
   let direction = 'ltr';
@@ -119,10 +124,7 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
       slideTitle = csvCellStr(element.getAttribute('slide_title')) || 'Question';
     }
 
-    if (lang === 'ar') {
-      if (slideTitle === 'Example') slideTitle = 'مثال';
-      else if (slideTitle === 'Question') slideTitle = 'سؤال';
-    }
+    slideTitle = localizeCanonicalSlideTitle(slideTitle, lang);
 
     const formattedNumber = String(parseInt(slideNumber, 10)).padStart(3, '0');
     let line = `\\slide{${formattedNumber}}{${slideId}}{${slideTitle}}{${slideType}}`;

@@ -6,10 +6,12 @@ import {
   csvCellStr,
   findCsvForMetasession,
   isTwelveDigitId,
-  languageFromCsvPath,
   loadSessionRows,
+  normalizeMetasessionId,
   normalizeVideoThumbnailTs,
+  requireLanguageFromReportRow,
 } from '../shared/sessionCsv.js';
+import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { fetchDownloadUrl } from '../shared/httpFetch.js';
 import { extractFrame } from '../video/ffmpegBridge.js';
 import {
@@ -235,8 +237,8 @@ async function resolveMp4(ctx, videoId, slideDir, onProgress) {
   const dest = `${slideDir}/${videoId}.mp4`;
 
   if (await vfs.isFile(dest)) {
-    const stat = await vfs.stat?.(dest);
-    if (!stat || stat.size > 0) return dest;
+    const stat = typeof vfs.stat === 'function' ? await vfs.stat(dest) : null;
+    if (stat?.size > 0) return dest;
   }
 
   if (await downloadVideo(ctx, videoId, dest, onProgress)) {
@@ -245,9 +247,12 @@ async function resolveMp4(ctx, videoId, slideDir, onProgress) {
 
   const fallback = `${config.videosFallbackDir || 'videos'}/${videoId}.mp4`;
   if (await vfs.isFile(fallback)) {
-    await vfs.copyFile(fallback, dest);
-    log(`[fallback] copied ${fallback} -> ${dest}`);
-    return dest;
+    const fallbackStat = typeof vfs.stat === 'function' ? await vfs.stat(fallback) : null;
+    if (fallbackStat?.size > 0) {
+      await vfs.copyFile(fallback, dest);
+      log(`[fallback] copied ${fallback} -> ${dest}`);
+      return dest;
+    }
   }
 
   throw new Error(
@@ -348,6 +353,29 @@ async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onPro
 
 /**
  * @param {object} ctx
+ * @param {string} csvPath
+ * @param {string} sessionDir
+ */
+async function sessionLanguageForCsv(ctx, csvPath, sessionDir) {
+  const rows = await loadSessionRows(ctx.vfs, csvPath);
+  let metaId = '';
+  for (const row of rows) {
+    metaId = normalizeMetasessionId(row.metasession_id);
+    if (metaId) break;
+  }
+  if (!metaId) {
+    metaId = metasessionIdFromFolderName(sessionDir.split('/').pop()) || '';
+  }
+  if (!metaId) {
+    throw new Error(`No metasession_id available for session language lookup in ${sessionDir}`);
+  }
+  const fetchFn = ctx.fetchFn || ctx.config?.fetchFn || fetch;
+  const reportRow = await getMetasessionReportRow(metaId, { fetchFn, log: ctx.log, fatal: true });
+  return requireLanguageFromReportRow(reportRow);
+}
+
+/**
+ * @param {object} ctx
  * @param {string} sessionDir
  * @param {string} fontFamily
  * @param {HTMLImageElement} playIcon
@@ -361,7 +389,7 @@ async function processSession(ctx, sessionDir, fontFamily, playIcon) {
     return 0;
   }
 
-  const lang = languageFromCsvPath(csvPath);
+  const lang = await sessionLanguageForCsv(ctx, csvPath, sessionDir);
   const rows = await loadSessionRows(ctx.vfs, csvPath);
   const videoRows = rows.filter(isVideoCsvRow);
   if (!videoRows.length) return 0;

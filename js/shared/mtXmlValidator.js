@@ -2,6 +2,7 @@ import {
   canonicalQuestionSlideTitle,
   csvCellStr,
   expectedSectionTypeForMetasessionType,
+  isPlainTwelveDigitId,
   isTwelveDigitId,
   metasessionTypeLabel,
   validateMetasessionTypeSupported,
@@ -179,8 +180,13 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
       }
       if (slide.getAttribute('slide_id') !== slide.getAttribute('question_id')) errors.push(`question slide ${sn}: slide_id must equal question_id.`);
       if (!QUESTION_ID_RE.test(csvCellStr(slide.getAttribute('question_id')))) errors.push(`question slide ${sn}: question_id must be 12 digits plus .NN.`);
-      const expectedTitle = canonicalQuestionSlideTitle(root.getAttribute('language') || 'en', role);
-      if (slide.getAttribute('slide_title') !== expectedTitle) errors.push(`question slide ${sn}: slide_title must be '${expectedTitle}'.`);
+      const langAttr = csvCellStr(root.getAttribute('language'));
+      if (!langAttr) {
+        errors.push('metasession root missing language attribute from metasession API');
+      } else {
+        const expectedTitle = canonicalQuestionSlideTitle(langAttr, role);
+        if (slide.getAttribute('slide_title') !== expectedTitle) errors.push(`question slide ${sn}: slide_title must be '${expectedTitle}'.`);
+      }
     } else {
       errors.push(`slide ${sn}: invalid slide_category '${category}'.`);
     }
@@ -195,7 +201,7 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     for (const attr of ['exam_id', 'exam_title', 'duration']) {
       if (!csvCellStr(exam.getAttribute(attr))) errors.push(`<exam> missing required attribute '${attr}'.`);
     }
-    if (!isTwelveDigitId(exam.getAttribute('exam_id'))) errors.push(`exam_id '${exam.getAttribute('exam_id')}' must be a 12-digit ID.`);
+    if (!isPlainTwelveDigitId(exam.getAttribute('exam_id'))) errors.push(`exam_id '${exam.getAttribute('exam_id')}' must be a 12-digit ID.`);
     if (!exam.querySelector(':scope > question')) errors.push(`exam ${exam.getAttribute('exam_id') || '?'}: must contain at least one question.`);
   }
 
@@ -248,6 +254,41 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
         if (apiVal && xmlVal && apiVal.toLowerCase() !== xmlVal.toLowerCase()) {
           errors.push(`Question ${occurrence.baseId}: API ${key} '${apiVal}' does not match XML '${xmlVal}'.`);
         }
+      }
+    }
+  }
+
+  const liveGroups = new Map();
+  for (const section of [...root.querySelectorAll('section')]) {
+    for (const slide of [...section.children].filter((el) => el.tagName === 'slide')) {
+      if (slide.getAttribute('slide_category') !== 'question') continue;
+      const match = csvCellStr(slide.getAttribute('question_id')).match(QUESTION_ID_RE);
+      if (!match) continue;
+      const key = `${section.getAttribute('section_id') || ''}:${match[1]}`;
+      if (!liveGroups.has(key)) liveGroups.set(key, { baseId: match[1], slides: [] });
+      liveGroups.get(key).slides.push(slide);
+    }
+  }
+  for (const { baseId, slides } of liveGroups.values()) {
+    const expectedParts = Number.parseInt(slides[0].getAttribute('number_of_parts') || '1', 10);
+    if (!Number.isFinite(expectedParts)) continue;
+    const parts = slides
+      .map((slide) => Number.parseInt(slide.getAttribute('part_number') || '0', 10))
+      .sort((a, b) => a - b);
+    const expectedPartList = Array.from({ length: expectedParts }, (_, idx) => idx + 1);
+    if (expectedParts > 1 && parts.join(',') !== expectedPartList.join(',')) {
+      errors.push(`Live multipart question ${baseId}: expected parts 1..${expectedParts}, got ${JSON.stringify(parts)}.`);
+    }
+    const slideNumbers = slides
+      .map((slide) => Number.parseInt(slide.getAttribute('slide_number') || '0', 10))
+      .sort((a, b) => a - b);
+    if (slideNumbers.length > 1) {
+      const expectedSlideNumbers = Array.from(
+        { length: slideNumbers.length },
+        (_, idx) => slideNumbers[0] + idx,
+      );
+      if (slideNumbers.join(',') !== expectedSlideNumbers.join(',')) {
+        errors.push(`Live multipart question ${baseId}: slide numbers must be consecutive.`);
       }
     }
   }

@@ -113,6 +113,33 @@ export class MountedDir {
     }
   }
 
+  /**
+   * @param {string} [relPath]
+   * @returns {Promise<{ size: number, isFile: boolean, isDir: boolean } | null>}
+   */
+  async stat(relPath = '') {
+    try {
+      const n = sanitizeRelativePath(relPath);
+      if (!n) {
+        return { size: 0, isFile: false, isDir: true };
+      }
+      const slash = n.lastIndexOf('/');
+      const dir = slash >= 0 ? n.slice(0, slash) : '';
+      const name = slash >= 0 ? n.slice(slash + 1) : n;
+      const dirHandle = await getDirHandle(this.handle, dir);
+      try {
+        const fh = await dirHandle.getFileHandle(name);
+        const file = await fh.getFile();
+        return { size: file.size, isFile: true, isDir: false };
+      } catch {
+        await dirHandle.getDirectoryHandle(name);
+        return { size: 0, isFile: false, isDir: true };
+      }
+    } catch {
+      return null;
+    }
+  }
+
   async mkdir(relPath, { recursive = false } = {}) {
     await getDirHandle(this.handle, relPath, { create: recursive || true });
   }

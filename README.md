@@ -151,14 +151,13 @@ cp links.csv.example links.csv
 
 ```json
 {
-  "cls_source_path": "/Users/user/GenMark/CLS",
   "remote_base_path": "/Users/user/GenMark/2024-2025-Slides/All",
   "auto_mount": true,
   "fs_api_base": ""
 }
 ```
 
-When you run **`node proxy/dev-server.mjs`** and open **http://127.0.0.1:8788**, CLS and slides archives mount automatically — no drag-and-drop needed (if those folders exist on your Mac).
+When you run **`node proxy/dev-server.mjs`** and open **http://127.0.0.1:8788**, the slides archive mounts automatically — no drag-and-drop needed (if that folder exists on your Mac).
 
 On **GitHub Pages** alone, the browser cannot read local disk paths. Use the dev server locally, or set `fs_api_base` to a team file API (see [§6](#6-run-the-app-locally-developers)).
 
@@ -173,7 +172,7 @@ If the site is deployed to GitHub Pages (e.g. `https://farouknagwa.github.io/mmt
 1. Open the URL in **Chrome or Edge**
 2. Sign in with Google **or** use shared tokens if the admin deployed them ([§5.5](#55-optional-shared-google-tokens-no-per-user-sign-in))
 3. Paste your **Google Slides URL** and click **Use this URL** (or drag `links.csv`)
-4. **CLS + slides archives:** pick folders manually on GitHub Pages, **or** use `node proxy/dev-server.mjs` locally for automatic paths ([§6](#6-run-the-app-locally-developers))
+4. **Slides archive:** pick the folder manually on GitHub Pages, **or** use `node proxy/dev-server.mjs` locally for automatic paths ([§6](#6-run-the-app-locally-developers))
 5. Click **Run pipeline**
 6. Click **Download ZIP** (or **Write to folder** if you picked a writable output folder)
 
@@ -283,7 +282,7 @@ node proxy/dev-server.mjs
 
 Open **http://127.0.0.1:8788**
 
-This serves the app, a same-origin `/proxy` for Nagwa APIs, and **`/fs/`** for CLS + slides archives at the paths in `archive-config.json`. When `auto_mount` is true and the folders exist, the CLS and slides pickers are hidden — no drag-and-drop needed.
+This serves the app, a same-origin `/proxy` for Nagwa APIs, and **`/fs/`** for the slides archive at the path in `archive-config.json`. When `auto_mount` is true and the folder exists, the slides picker is hidden — no drag-and-drop needed.
 
 Edit `archive-config.json` if your GenMark paths differ from the team default.
 
@@ -312,7 +311,7 @@ Nagwa APIs usually work via direct browser fetch (CORS). Clear any stale **CORS 
 ### In the browser
 
 1. Confirm `links.csv` is loaded (bundled or drag-and-drop)
-2. **Browse** or drag **Output**, **CLS archive**, **Slides archive**
+2. **Browse** or drag **Output** and **Slides archive**
 3. **Verify Google auth** (optional; also runs at pipeline start)
 4. **Run pipeline** (or set **Resume from step**)
 5. **Write to folder** or **Download ZIP**
@@ -327,7 +326,7 @@ Typical session processing:
 
 1. Update `links.csv` with the new Google Slides URL(s)
 2. Start dev server → open http://127.0.0.1:8788
-3. Select CLS archive, slides archive, and a writable output folder
+3. Select slides archive and a writable output folder
 4. Run pipeline (steps 1–10)
 5. **Write to folder** → files appear under your chosen output directory (e.g. `files/{session_id}_.../`)
 
@@ -355,7 +354,7 @@ To re-run only part of the pipeline, set **Resume from step** (same idea as `pyt
 | 3 | `xmlBuilder.js` | CSV → metasession XML |
 | 4 | `texBuilder.js` | XML → session TeX |
 | 5 | `makeFiles.js` | Materialize `files/{session}/` tree |
-| 6 | `copySlidesContent.js` | Copy CLS + remote slide content, re-ID |
+| 6 | `copySlidesContent.js` | Copy remote slide content, re-ID |
 | 7 | `cleanWrappedSlides.js` | LaTeX cleaning |
 | 8 | `addVerbatimToSlides.js` | Inject verbatim text |
 | 9 | `videoSlide.js` | Video assets (ffmpeg.wasm + Canvas) |

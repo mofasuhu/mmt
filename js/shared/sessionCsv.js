@@ -89,14 +89,14 @@ export function sanitizePptxDownloadBasenameForPlatform(name) {
 
 /** Canonical Example/Question titles → session language (matches session_csv.py). */
 const CANONICAL_SLIDE_TITLES = {
-  question: { ar: 'سؤال', en: 'Question' },
-  example: { ar: 'مثال', en: 'Example' },
-};
-
-export const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'activity', 'thank_you']);
-export const QUESTION_ROLES = new Set(['example', 'interactive_example']);
-
-const CANONICAL_QUESTION_SLIDE_TITLES = {
+  question: {
+    ar: 'سؤال',
+    en: 'Question',
+    fr: 'Question',
+    es: 'Pregunta',
+    de: 'Frage',
+    it: 'Domanda',
+  },
   example: {
     ar: 'مثال',
     en: 'Example',
@@ -115,19 +115,102 @@ const CANONICAL_QUESTION_SLIDE_TITLES = {
   },
 };
 
+export const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'activity', 'thank_you']);
+export const QUESTION_ROLES = new Set(['example', 'interactive_example']);
+
+const CANONICAL_QUESTION_SLIDE_TITLES = {
+  question: {
+    ar: 'سؤال',
+    en: 'Question',
+    fr: 'Question',
+    es: 'Pregunta',
+    de: 'Frage',
+    it: 'Domanda',
+  },
+  example: {
+    ar: 'مثال',
+    en: 'Example',
+    fr: 'Exemple',
+    es: 'Ejemplo',
+    de: 'Beispiel',
+    it: 'Esempio',
+  },
+  interactive_example: {
+    ar: 'مثال تفاعلي',
+    en: 'Interactive Example',
+    fr: 'Exemple Interactif',
+    es: 'Ejemplo Interactivo',
+    de: 'Interaktives Beispiel',
+    it: 'Esempio Interattivo',
+  },
+};
+
+export const THANK_YOU_TITLE_BY_LANGUAGE = {
+  ar: 'شكرًا جزيلًا!',
+  de: 'Vielen Dank!',
+  en: 'Thank You!',
+  es: '¡Gracias!',
+  fr: 'Merci!',
+  it: 'Grazie!',
+};
+
+const THANK_YOU_TITLE_NORMALIZED = new Set([
+  'thank you',
+  'شكرا جزيلا',
+  'vielen dank',
+  'gracias',
+  'merci',
+  'grazie',
+]);
+
 export function languageFromCsvPath(csvPath) {
-  const base = String(csvPath).split('/').pop() || '';
-  const lower = base.toLowerCase();
-  if (lower.endsWith('_ar.csv')) return 'ar';
-  if (lower.endsWith('_en.csv')) return 'en';
-  if (ARABIC_SCRIPT_RE.test(base)) return 'ar';
-  return 'en';
+  throw new Error(
+    'languageFromCsvPath is deprecated; use requireLanguageFromReportRow() with metasession API data instead',
+  );
 }
 
 export function normalizeLanguageCode(lang) {
   const code = csvCellStr(lang).toLowerCase();
   if (!code) return 'en';
   return LANGUAGE_ALIASES[code] || code;
+}
+
+/** Session language from metasession API report row only (never filename/CSV path). */
+export function requireLanguageFromReportRow(reportRow) {
+  if (!reportRow) {
+    throw new Error('metasession API report is missing; cannot determine session language');
+  }
+  const raw = csvCellStr(reportRow.Language);
+  if (!raw) {
+    throw new Error('metasession API report has no Language field');
+  }
+  return normalizeLanguageCode(raw);
+}
+
+/** Session language from raw metasession API data only. */
+export function requireLanguageFromApiData(apiData) {
+  if (!apiData) {
+    throw new Error('metasession API data is missing; cannot determine session language');
+  }
+  const languageObj = apiData.language || {};
+  const raw = csvCellStr(
+    typeof languageObj === 'object' && languageObj
+      ? (languageObj.iso_code || languageObj.name)
+      : languageObj,
+  );
+  if (!raw) {
+    throw new Error('metasession API data has no language.iso_code');
+  }
+  return normalizeLanguageCode(raw);
+}
+
+/** Session title for slide 1 from metasession API report (prefix stripped). */
+export function cleanedSessionTitleFromReportRow(reportRow) {
+  if (!reportRow) return '';
+  const raw = csvCellStr(reportRow.Title || reportRow['Metasession Title']);
+  if (!raw) return '';
+  const colonIdx = raw.indexOf(':');
+  return colonIdx >= 0 ? raw.slice(colonIdx + 1).trim() : raw;
 }
 
 export function tocTitleForLanguage(lang) {
@@ -170,10 +253,11 @@ export function validatePptxSlide1MergedMetasessionIds(slideLabel, arMetasession
   return errors;
 }
 
-/** Map canonical Example/Question slide titles to the session language. */
+/** Map canonical Example/Question/Thank-you slide titles to the session language. */
 export function localizeCanonicalSlideTitle(title, lang) {
   const text = csvCellStr(title);
   if (!text) return text;
+  if (isThankYouTitle(text)) return thankYouTitleForLanguage(lang);
   const code = normalizeLanguageCode(lang);
   const mapping = CANONICAL_SLIDE_TITLES[text.toLowerCase()];
   if (mapping) return mapping[code] || text;
@@ -190,8 +274,13 @@ export function slideCategoryAndRole(slideTypeOrPurpose) {
 
 export function canonicalQuestionSlideTitle(language, role) {
   const code = normalizeLanguageCode(language);
-  const roleKey = csvCellStr(role).toLowerCase().replace(/ /g, '_');
-  const mapping = CANONICAL_QUESTION_SLIDE_TITLES[roleKey] || CANONICAL_QUESTION_SLIDE_TITLES.example;
+  let roleKey = csvCellStr(role).toLowerCase().replace(/ /g, '_');
+  if (['interactive_example', 'interactive'].includes(roleKey)) {
+    roleKey = 'interactive_example';
+  } else if (roleKey !== 'example') {
+    roleKey = 'question';
+  }
+  const mapping = CANONICAL_QUESTION_SLIDE_TITLES[roleKey] || CANONICAL_QUESTION_SLIDE_TITLES.question;
   return mapping[code] || mapping.en;
 }
 
@@ -232,6 +321,17 @@ export function isNewId(val) {
   return csvCellStr(val).toLowerCase() === 'new';
 }
 
+export function isPlainTwelveDigitId(val) {
+  const s = csvCellStr(val);
+  if (!s || isNewId(s)) return false;
+  return SECTION_ID_RE.test(s);
+}
+
+export function isValidRawExamId(val) {
+  const s = csvCellStr(val);
+  return isNewId(s) || isPlainTwelveDigitId(s);
+}
+
 export function isTwelveDigitId(val) {
   const s = csvCellStr(val);
   if (!s || isNewId(s)) return false;
@@ -247,6 +347,29 @@ export function isSectionId(val) {
 
 export function stripTashkeel(text) {
   return csvCellStr(text).replace(TASHKEEL_RE, '');
+}
+
+export function normalizeThankYouTitleForMatch(title) {
+  return stripTashkeel(title)
+    .toLowerCase()
+    .trim()
+    .replace(/¡/g, '')
+    .replace(/^[!؟?。．.\s]+|[!؟?。．.\s]+$/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+export function isThankYouTitle(title) {
+  return THANK_YOU_TITLE_NORMALIZED.has(normalizeThankYouTitleForMatch(title));
+}
+
+export function thankYouTitleForLanguage(lang) {
+  const code = normalizeLanguageCode(lang);
+  return THANK_YOU_TITLE_BY_LANGUAGE[code] || THANK_YOU_TITLE_BY_LANGUAGE.en;
+}
+
+export function standardizedThankYouTitle(lang, detectedTitle = '') {
+  if (detectedTitle && !isThankYouTitle(detectedTitle)) return null;
+  return thankYouTitleForLanguage(lang);
 }
 
 export function isRecapTitle(title) {
@@ -423,31 +546,15 @@ export function isInstructionalInSectionSlide(slide, { bilingual = false } = {})
   return true;
 }
 
-const THANK_YOU_TITLE_NORMALIZED = new Set([
-  'thank you',
-  'شكرًا جزيلًا',
-  'شكرا جزيلًا',
-  'شكرًا جزيلا',
-  'شكرا جزيلا',
-]);
-
 const WELL_DONE_TITLES = new Set(['well done', 'عمل رائع']);
-
-export function isThankYouTitle(title) {
-  const text = csvCellStr(title).trim().replace(/^!+|!+$/g, '').toLowerCase();
-  if (THANK_YOU_TITLE_NORMALIZED.has(text)) return true;
-  const arNorm = stripTashkeel(csvCellStr(title).replace(/ً/g, '').trim().replace(/^!+|!+$/g, '')).toLowerCase();
-  return THANK_YOU_TITLE_NORMALIZED.has(arNorm);
-}
 
 export function isWellDoneTitle(title) {
   return WELL_DONE_TITLES.has(stripTashkeel(csvCellStr(title)).toLowerCase().replace(/^!+|!+$/g, ''));
 }
 
 export function isBilingualThankYouSlide(slide) {
-  const enTitle = csvCellStr(slide?.en_slide_title).trim().replace(/^!+|!+$/g, '').toLowerCase();
-  const arTitle = csvCellStr(slide?.ar_slide_title).replace(/ً/g, '').trim().replace(/^!+|!+$/g, '');
-  return enTitle === 'thank you' && arTitle === 'شكرا جزيلا';
+  return ['en_slide_title', 'ar_slide_title', 'slide_title']
+    .some((key) => isThankYouTitle(slide?.[key] || ''));
 }
 
 export function slideHasTailTitle(slide, { bilingual = false } = {}) {
@@ -889,9 +996,9 @@ export function validateSectionTypesForMetasessionType(metasessionType, { slides
   return errors;
 }
 
-/** ``revision`` sections skip exact question-id cross-check against the section API. */
+/** Revision/foundation sections skip exact question-id cross-checks. */
 export function skipSectionQuestionValidation(sectionType) {
-  return normalizeSectionType(sectionType).toLowerCase() === 'revision';
+  return ['revision', 'foundation'].includes(normalizeSectionType(sectionType).toLowerCase());
 }
 
 const UTF8_BOM = '\uFEFF';
@@ -1127,8 +1234,7 @@ export function xmlQuestionPlacement(row) {
 }
 
 export function isThankYouRow(row) {
-  const title = csvCellStr(row.section_title).toLowerCase();
-  return ['thank you!', 'thank you', 'شكرًا جزيلًا', 'شكرا جزيلا'].includes(title);
+  return isThankYouTitle(row?.section_title);
 }
 
 export function texTypeFromRow(row, xmlSlideType = null) {

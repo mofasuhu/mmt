@@ -45,12 +45,25 @@ export const VALID_QUESTION_ROLES = [
 ];
 
 export const THANK_YOU_PATTERNS = [
-  'thank you', 'شكرًا جزيلًا', 'شكرا جزيلًا', 'شكرًا جزيلا', 'شكرا جزيلا', 'شكرًا جزيلًا!',
+  'thank you',
+  'شكرًا جزيلًا',
+  'شكرا جزيلًا',
+  'شكرًا جزيلا',
+  'شكرا جزيلا',
+  'vielen dank',
+  'gracias',
+  '¡gracias',
+  'merci',
+  'grazie',
 ];
 
-export const THANK_YOU_STANDARDIZED = {
-  'thank you': 'Thank You!',
-  'شكرًا جزيلًا': 'شكرًا جزيلًا',
+export const THANK_YOU_TITLE_BY_LANGUAGE = {
+  ar: 'شكرًا جزيلًا!',
+  de: 'Vielen Dank!',
+  en: 'Thank You!',
+  es: '¡Gracias!',
+  fr: 'Merci!',
+  it: 'Grazie!',
 };
 
 export const SECTION_TITLE_TARGET_RGB = [0, 114, 180];

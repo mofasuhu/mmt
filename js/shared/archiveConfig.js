@@ -6,7 +6,6 @@
 export const ARCHIVE_CONFIG_FILE = 'archive-config.json';
 
 export const DEFAULT_ARCHIVE_CONFIG = {
-  cls_source_path: '/Users/user/GenMark/CLS',
   remote_base_path: '/Users/user/GenMark/2024-2025-Slides/All',
   auto_mount: true,
   fs_api_base: '',

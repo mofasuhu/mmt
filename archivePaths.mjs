@@ -7,7 +7,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(__dirname, 'archive-config.json');
 
 const DEFAULTS = {
-  cls_source_path: '/Users/user/GenMark/CLS',
   remote_base_path: '/Users/user/GenMark/2024-2025-Slides/All',
 };
 
@@ -21,5 +20,4 @@ function loadNodeArchiveConfig() {
 }
 
 const cfg = loadNodeArchiveConfig();
-export const CLS_SOURCE_PATH = cfg.cls_source_path;
 export const REMOTE_BASE_PATH = cfg.remote_base_path;
