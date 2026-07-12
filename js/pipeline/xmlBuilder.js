@@ -1160,6 +1160,37 @@ function groupOrphanInteractiveSlides(metasessionElement, log) {
   }
 }
 
+/** Attribute order on serialized XML (matches Python xml_builder / ElementTree). */
+const XML_ATTR_ORDER = {
+  metasession: [
+    'metasession_id', 'metasession_number', 'metaclass_id', 'metasession_type',
+    'language', 'country', 'subject', 'grade', 'term', 'season', 'academic_year',
+  ],
+  slide: [
+    'slide_id', 'slide_number', 'video_id', 'activity_id',
+    'slide_category', 'slide_role', 'slide_title',
+    'question_id', 'number_of_parts', 'part_number', 'question_type',
+  ],
+  section: ['section_id', 'section_type'],
+  worksheet: ['worksheet_id'],
+  question: ['question_id', 'number_of_parts', 'part_number', 'question_type'],
+  exam: ['exam_id', 'exam_title', 'duration'],
+};
+
+function orderedAttributeNames(el) {
+  const preferred = XML_ATTR_ORDER[el.tagName];
+  const attrs = [...el.attributes];
+  if (!preferred) {
+    return attrs.map((a) => a.name).sort((a, b) => a.localeCompare(b));
+  }
+  const present = new Set(attrs.map((a) => a.name));
+  const ordered = preferred.filter((name) => present.has(name));
+  for (const attr of attrs) {
+    if (!ordered.includes(attr.name)) ordered.push(attr.name);
+  }
+  return ordered;
+}
+
 function formatXmlPretty(doc) {
   const root = doc.documentElement;
   const lines = [];
@@ -1174,8 +1205,8 @@ function formatXmlPretty(doc) {
 
   function attrs(el) {
     const parts = [];
-    for (const attr of [...el.attributes].sort((a, b) => a.name.localeCompare(b.name))) {
-      parts.push(`${attr.name}="${esc(attr.value)}"`);
+    for (const name of orderedAttributeNames(el)) {
+      parts.push(`${name}="${esc(el.getAttribute(name))}"`);
     }
     return parts.length ? ` ${parts.join(' ')}` : '';
   }
