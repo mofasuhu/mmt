@@ -24,6 +24,10 @@ import {
   isThankYouTitle,
   requireLanguageFromApiData,
   cleanedSessionTitleFromReportRow,
+  liveSlideRoleFromRow,
+  isWorksheetQuestionRow,
+  validateLiveQuestionsCsvXml,
+  requireLanguageFromReportRow,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -483,6 +487,12 @@ export async function validateSessionCsv(
       const xmlValidation = await validateMtXmlDocument(xmlDoc, { fetchFn });
       xmlOutputErrors = xmlValidation.errors;
       xmlOutputWarnings = xmlValidation.warnings;
+      const lang = requireLanguageFromReportRow(detailsRow);
+      const fidelityErrors = validateLiveQuestionsCsvXml(sessionRows, xmlDoc.documentElement, {
+        lang,
+        translateFn: (q) => translateQuestionId(q, sessionSubject, log),
+      });
+      xmlOutputErrors.push(...fidelityErrors);
     } catch (e) {
       xmlOutputErrors = [`Could not validate generated XML output: ${e.message || e}`];
     }
@@ -590,10 +600,10 @@ function translateQuestionId(qId, subject, log) {
 
   const translatedBase = questionTranslationCache.get(basePart);
   if (!translatedBase) {
-    log(
-      `Question ID '${qId}' for subject '${subject}' requires translation but no translation was returned by the QMS API. Keeping original ID.`,
+    throw new Error(
+      `Question ID '${qId}' for subject '${subject}' requires translation `
+      + 'but no translation was returned by the QMS API.',
     );
-    return qId;
   }
 
   return decimalPart ? `${translatedBase}.${decimalPart}` : translatedBase;
@@ -662,10 +672,9 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   });
   let sessionRowsProcessed;
   if (expandErrors.length) {
-    log('Question ID expansion safety net failed:');
-    for (const err of expandErrors) log(`  - ${err}`);
-    sessionRowsProcessed = sessionRows.map((r) => ({ ...r }));
-  } else if (
+    throw new Error(`Question ID expansion failed: ${expandErrors.join('; ')}`);
+  }
+  if (
     expandedRows.length !== sessionRows.length
     || expandedRows.some((row, i) =>
       csvCellStr(row.question_id) !== csvCellStr(sessionRows[i]?.question_id)
@@ -784,8 +793,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
   let currentSectionElement = null;
   let currentSectionId = null;
-  let currentCheckpointElement = null;
-  const questionsInCheckpoint = new Set();
+  let currentWorksheetElement = null;
+  const questionsInWorksheet = new Set();
   let currentSectionGroupElement = null;
   let lastSectionTitle = '';
   let activeGroupName = null;
@@ -796,7 +805,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     const idx = rowIndex >= 0 ? rowIndex : mainIdx + 2;
 
     const qId = row.question_id;
-    if (!isBlank(qId) && questionsInCheckpoint.has(formatQuestionId(qId))) continue;
+    if (!isBlank(qId) && questionsInWorksheet.has(formatQuestionId(qId))) continue;
 
     const sectionTitle = csvCellStr(row.section_title);
     const sectionGp = csvCellStr(row.section_gp);
@@ -848,13 +857,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
 
     const normalizedTitle = sectionTitle.toLowerCase();
-    const isSpecialTitle = [
-      'example', 'question', 'سؤال', 'مثال', 'essempio', 'domanda',
-      'ejemplo', 'bregunta', 'beispiel', 'frage',
-    ].includes(normalizedTitle);
 
     const videoIdOnRow = csvCellStr(row.video_id);
-    const slidePurpose = csvCellStr(row.slide_purpose).toLowerCase();
     const activityIdOnRow = csvCellStr(row.activity_id);
 
     const sectionIdFromCsv = normalizeSectionId(row.section_id);
@@ -881,8 +885,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
         lastSectionTitle = sectTitle;
       }
       currentSectionId = sectionIdFromCsv;
-      currentCheckpointElement = null;
-      questionsInCheckpoint.clear();
+      currentWorksheetElement = null;
+      questionsInWorksheet.clear();
     }
 
     const parentForItem = currentSectionElement || currentSectionGroupElement || metasession;
@@ -892,55 +896,50 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
 
     const slideIdEmpty = !csvCellStr(row.slide_id);
-    const questionRole = csvCellStr(row.question_role).toLowerCase().replace(/ /g, '_');
-    const placementCol = csvCellStr(row.question_placement).toLowerCase();
-    const isCheckpointRow =
-      slideIdEmpty &&
-      !isBlank(qId) &&
-      (questionRole === 'checkpoint' ||
-        questionRole === 'practice' ||
-        (placementCol && placementCol !== 'example'));
+    const rowForRole = {
+      slide_id: csvCellStr(row.slide_id),
+      question_id: csvCellStr(row.question_id),
+      question_role: csvCellStr(row.question_role),
+      question_placement: csvCellStr(row.question_placement),
+    };
+    const isWorksheetRow =
+      slideIdEmpty && !isBlank(qId) && isWorksheetQuestionRow(rowForRole);
 
-    if (isCheckpointRow) {
+    if (isWorksheetRow) {
       let placement = xmlQuestionPlacement({
         question_role: csvCellStr(row.question_role),
         question_placement: csvCellStr(row.question_placement),
       });
-      if (!placement) placement = placementCol || questionRole;
+      const placementCol = csvCellStr(row.question_placement).toLowerCase();
+      if (!placement) placement = placementCol || csvCellStr(row.question_role).toLowerCase().replace(/ /g, '_');
       if (placement !== 'example') {
-        if (!currentCheckpointElement) {
+        if (!currentWorksheetElement) {
           if (!currentSectionElement || !currentSectionId) {
             log(`Worksheet question on slide ${row.slide_number || '?'} is not inside a section; skipping.`);
             continue;
           }
-          const requiredCorrect = !isBlank(row.required_correct)
-            ? parseInt(row.required_correct, 10)
-            : 0;
-          const attemptWindow = !isBlank(row.attempt_window)
-            ? parseInt(row.attempt_window, 10)
-            : 0;
-          currentCheckpointElement = ensureWorksheet(currentSectionElement, currentSectionId);
-          questionsInCheckpoint.clear();
+          currentWorksheetElement = ensureWorksheet(currentSectionElement, currentSectionId);
+          questionsInWorksheet.clear();
         }
 
         if (!isBlank(qId)) {
           const formattedQId = formatQuestionId(qId);
           const translatedQId = translateQuestionId(formattedQId, subject, log);
-          questionsInCheckpoint.add(formattedQId);
-          currentCheckpointElement.appendChild(
+          questionsInWorksheet.add(formattedQId);
+          currentWorksheetElement.appendChild(
             createEl(doc, 'question', questionAttrs(qId, translatedQId, missingQuestions, log)),
           );
         }
       }
     }
 
-    if (questionsInCheckpoint.has(formatQuestionId(qId))) continue;
+    if (questionsInWorksheet.has(formatQuestionId(qId))) continue;
 
     if (!sectionTitle && isBlank(qId)) continue;
 
     const isVideoRow =
       isBlank(qId) &&
-      (videoIdOnRow || slidePurpose === 'video' || ['video', 'فيديو'].includes(normalizedTitle));
+      (videoIdOnRow || ['video', 'فيديو'].includes(normalizedTitle));
     const isActivityRow = isBlank(qId) && Boolean(activityIdOnRow);
 
     if (isVideoRow && videoIdOnRow) {
@@ -981,16 +980,16 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
     const hasQuestion = !isBlank(qId);
     let slideType;
-    if (['example', 'interactive_example', 'instructional', 'video'].includes(slidePurpose)) {
-      slideType = slidePurpose;
-    } else if (hasQuestion || isSpecialTitle) {
-      slideType = 'example';
+    if (hasQuestion) {
+      slideType = liveSlideRoleFromRow(rowForRole);
+      if (!slideType) {
+        throw new Error(
+          `Slide ${row.slide_number}: question_id present but question_role `
+          + "must be 'example' or 'interactive_example' for live question slides.",
+        );
+      }
     } else {
       slideType = 'instructional';
-    }
-
-    if (hasQuestion && ['question', 'سؤال'].includes(normalizedTitle)) {
-      slideType = 'interactive_example';
     }
 
     let slideId;
@@ -1004,9 +1003,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
 
     let slideTitleText;
-    if (hasQuestion) {
-      slideTitleText = sectionTitle;
-    } else if (slideType === 'instructional') {
+    if (slideType === 'instructional') {
       slideTitleText = sectionTitle || lastSectionTitle;
     } else if (
       sectionGp === sectionTitle &&
@@ -1015,7 +1012,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     ) {
       slideTitleText = sectionGp;
     } else {
-      slideTitleText = slideType === 'example' ? 'Example' : lastSectionTitle;
+      slideTitleText = lastSectionTitle;
     }
 
     slideTitleText = localizeCanonicalSlideTitle(slideTitleText, lang);

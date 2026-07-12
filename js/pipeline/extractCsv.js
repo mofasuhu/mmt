@@ -34,6 +34,7 @@ import {
   validatePracticeQuestionTypesFromRows,
   processQuestionIdsFromApi,
   validateSectionTypesForMetasessionType,
+  validateQuestionRoleValue,
   normalizeVideoThumbnailTs,
   shouldUseSectionPlaceholderTitle,
   canonicalQuestionSlideTitle,
@@ -288,7 +289,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         : baseTerminators;
 
       for (const textBlock of collectedTexts) {
-        const info = extractInfoFromSlide(textBlock, slideNumber, NEW_MODE_SLIDE_FIELDS, terminatorFields, warn);
+        const info = extractInfoFromSlide(
+          textBlock, slideNumber, NEW_MODE_SLIDE_FIELDS, terminatorFields, warn, slideValidationErrors,
+        );
         for (const [key, value] of Object.entries(info)) {
           if (value && !slideData[key]) slideData[key] = value;
         }
@@ -300,6 +303,17 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       slideData.slide_number = slideNumber;
       slideData.verbatim_multipart = verbatimMultipart;
       slideData.verbatim_number = verbatimNumber;
+
+      const qid = csvCellStr(slideData.question_id);
+      if (qid) {
+        const roleErr = validateQuestionRoleValue(slideData.question_role, `Slide ${slideNumber}`);
+        if (roleErr) slideValidationErrors.push(roleErr);
+        else if (!csvCellStr(slideData.question_role)) {
+          slideValidationErrors.push(
+            `Slide ${slideNumber}: question_id '${qid}' exists but question_role is missing.`,
+          );
+        }
+      }
 
       if (slideNumber === 2) {
         const tocErr = validatePptxSlide2Toc(`Slide ${slideNumber}`, combinedText);
@@ -856,6 +870,10 @@ function validateCsvNewModeFromRows(rows) {
     if (questionRole && !qid) {
       validationErrors.push(`Slide ${slideNum}: question_role '${questionRole}' found but no question_id.`);
     }
+    if (questionRole) {
+      const roleErr = validateQuestionRoleValue(questionRole, `Slide ${slideNum}`);
+      if (roleErr) validationErrors.push(roleErr);
+    }
 
     if (qid) {
       if (!isTwelveDigitId(qid)) {
@@ -1151,10 +1169,10 @@ export async function runExtractCsv(ctx, pptxFilenames) {
     log(`Processing PowerPoint: ${filename}`);
     log('='.repeat(60));
 
-    const mode = await detectModeFromPresentation(vfs, filePath, log, pptxOptions);
-    log(`-> Detected mode: ${mode.toUpperCase()}`);
+    const mode = 'new';
+    log('-> Using new-mode extraction');
 
-    if (mode === 'new') {
+    {
       const result = await processPresentationNewMode(vfs, filePath, log, pptxOptions);
       if (!result) {
         abortPipeline(log, `No data was extracted from ${filename}`);
@@ -1327,114 +1345,6 @@ export async function runExtractCsv(ctx, pptxFilenames) {
           sheetsRowsToUpload.push(...sheetRows);
           log(`   [Sheets] Queued ${sheetRows.length} slide_id row(s) for upload.`);
         }
-      }
-    } else {
-      const result = await processPresentation(vfs, filePath, log, pptxOptions);
-      if (!result) {
-        abortPipeline(log, `No data was extracted from ${filename}`);
-      }
-
-      const { extractedRows: allSlidesData, headerMetadata } = result;
-      const originalBaseName = stemName(filename);
-      let finalSaveName = `${originalBaseName}.csv`;
-      let savePermission = true;
-      const validationErrors = [];
-      let legacyPptxErrors = [];
-      let reportRow = null;
-
-      const numeralsVal = csvCellStr(headerMetadata.numerals);
-      if (numeralsVal) {
-        if (!['arabic', 'european'].includes(numeralsVal.toLowerCase())) {
-          log(`   [ERROR] Invalid value for 'numerals': '${numeralsVal}'. Must be 'Arabic' or 'European'.`);
-          savePermission = false;
-          validationErrors.push(`Invalid numerals value: '${numeralsVal}'`);
-        }
-      }
-
-      if (savePermission) {
-        const metaId = csvCellStr(headerMetadata.metasession_id);
-        if (metaId) {
-          log(`-> Found metasession_id: ${metaId}`);
-          log('   Fetching metasession data from API...');
-          const reportRow = await getMetasessionReportRow(metaId, apiOpts);
-          const apiData = await getRawMetasessionData(metaId, { ...apiOpts, fatal: false });
-          if (apiData) {
-            legacyPptxErrors = validatePptxNameAgainstApi(originalBaseName, apiData);
-          }
-          if (legacyPptxErrors.length) {
-            log('   [FAILURE] PPTX filename validation failed.');
-            for (const err of legacyPptxErrors) log(`     - ${err}`);
-            savePermission = false;
-            validationErrors.push(...legacyPptxErrors);
-          }
-
-          log('   Validating metadata against API response...');
-          const { valid: isValidMeta, errors: metaErrors } = validateHeaderAgainstReport(
-            headerMetadata, reportRow,
-          );
-
-          if (isValidMeta) {
-            log('   [SUCCESS] Metadata validation passed.');
-            finalSaveName = `${metaId}_${originalBaseName}.csv`;
-          } else {
-            log('   [FAILURE] Metadata validation failed.');
-            for (const err of metaErrors) log(`     - ${err}`);
-            savePermission = false;
-            validationErrors.push(...metaErrors);
-          }
-        } else {
-          log("   [ERROR] Missing mandatory field 'metasession_id' on Slide 1.");
-          savePermission = false;
-          validationErrors.push("Missing mandatory field 'metasession_id' on Slide 1.");
-        }
-      }
-
-      if (savePermission) {
-        if (reportRow) {
-          const sessionLang = requireLanguageFromReportRow(reportRow);
-          applyLegacyQuestionTitleFallback(allSlidesData, sessionLang);
-        }
-
-        const saveFilepath = joinPath(csvsPath, finalSaveName);
-        log(`-> Saving to ${finalSaveName}...`);
-        await saveToCsv(vfs, saveFilepath, allSlidesData, false, log);
-
-        log('   Validating extracted content...');
-        const { rows } = await readCsvFromVfs(vfs, saveFilepath);
-        const { valid: isValidContent, errors: contentErrors } = validateCsvFromRows(rows);
-
-        if (isValidContent) {
-          log('   [SUCCESS] Content validation passed.');
-          processingSummary.push({
-            filename: finalSaveName,
-            status: 'VALID',
-            errors: [],
-          });
-
-          const sheetRows = await collectSlideIdRowsFromCsv(vfs, saveFilepath, log);
-          if (sheetRows.length > 0) {
-            sheetsRowsToUpload.push(...sheetRows);
-            log(`   [Sheets] Queued ${sheetRows.length} slide_id row(s) for upload.`);
-          }
-        } else {
-          try {
-            if (vfs.remove) await vfs.remove(saveFilepath);
-            log('   Deleted invalid file.');
-          } catch (e) {
-            log(`   Error deleting file: ${e.message}`);
-          }
-          if (!_abortOnError) {
-            processingSummary.push({
-              filename: finalSaveName,
-              status: 'INVALID',
-              errors: contentErrors,
-            });
-          } else {
-            abortPipeline(log, `CSV validation failed for ${finalSaveName}`, contentErrors);
-          }
-        }
-      } else {
-        abortPipeline(log, `Validation failed for ${filename}`, validationErrors);
       }
     }
     } catch (e) {

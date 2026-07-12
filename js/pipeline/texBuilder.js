@@ -11,7 +11,7 @@ import {
   getNumeralsFromRows,
   resolveSlideId,
   texTypeFromRow,
-  slideTitleFromRow,
+  texSlideTitleFromRow,
   slideNumberFromRow,
   xmlRoleFromSlideElement,
   localizeCanonicalSlideTitle,
@@ -116,12 +116,12 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
       }
       slideNumber = slideNumberFromRow(row, element.getAttribute('slide_number'));
       slideType = texTypeFromRow(row, xmlType);
-      slideTitle = slideTitleFromRow(row, element.getAttribute('slide_title'));
+      slideTitle = texSlideTitleFromRow(row, slideType, lang, element.getAttribute('slide_title'));
     } else {
       slideId = slideIdVal || questionIdVal;
       slideNumber = csvCellStr(element.getAttribute('slide_number')) || '0';
       slideType = texTypeFromRow(null, xmlType);
-      slideTitle = csvCellStr(element.getAttribute('slide_title')) || 'Question';
+      slideTitle = texSlideTitleFromRow(null, slideType, lang, element.getAttribute('slide_title'));
     }
 
     slideTitle = localizeCanonicalSlideTitle(slideTitle, lang);
@@ -134,15 +134,6 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
     return line;
   }
 
-  function processCheckpoint(checkpointEl, indent) {
-    const rc = csvCellStr(checkpointEl.getAttribute('required_correct')) || '0';
-    const aw = csvCellStr(checkpointEl.getAttribute('attempt_window')) || '0';
-    return [
-      `${indent}\\begin{checkpoint}{${rc}}{${aw}}`,
-      `${indent}\\end{checkpoint}`,
-    ];
-  }
-
   function processSectionElement(sectionElement, indent = '    ') {
     const lines = [];
     const sectionId = sectionElement.getAttribute('section_id') || '';
@@ -153,9 +144,8 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
 
     for (const sub of sectionElement.children) {
       if (sub.tagName === 'section_title') continue;
-      if (sub.tagName === 'checkpoint') {
-        lines.push(...processCheckpoint(sub, indent + '    '));
-      } else if (sub.tagName === 'slide') {
+      if (sub.tagName === 'worksheet') continue;
+      if (sub.tagName === 'slide') {
         lines.push(`${indent}    ${formatSlide(sub)}`);
       }
     }
@@ -194,8 +184,6 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
           texParts.push(...processSectionElement(child, '        '));
         } else if (child.tagName === 'slide') {
           texParts.push(`        ${formatSlide(child)}`);
-        } else if (child.tagName === 'checkpoint') {
-          texParts.push(...processCheckpoint(child, '        '));
         }
       }
 

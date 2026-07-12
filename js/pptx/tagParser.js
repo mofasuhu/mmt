@@ -57,8 +57,9 @@ function escapeRegex(str) {
  * @param {number} slideNumber
  * @param {string[]} allFields
  * @param {(msg: string) => void} [warn]
+ * @param {string[]} [validationErrors]
  */
-export function extractFieldValue(text, field, slideNumber, allFields, warn = () => {}) {
+export function extractFieldValue(text, field, slideNumber, allFields, warn = () => {}, validationErrors = null) {
   const fieldProbable = field.replace(/_/g, ' ');
 
   const processedText = text.replace(/[:=]\s*(\r\n|\n|\r)+\s*/gi, ': ');
@@ -144,9 +145,14 @@ export function extractFieldValue(text, field, slideNumber, allFields, warn = ()
   }
 
   if (field === 'question_role') {
-    v = v.toLowerCase().trim();
+    v = v.toLowerCase().trim().replace(/ /g, '_');
     if (v && !VALID_QUESTION_ROLES.includes(v)) {
-      warn(`  [Warning on Slide ${slideNumber}] Invalid value for 'question_role': '${v}'. Ignoring.`);
+      const msg = `Slide ${slideNumber}: invalid question_role '${v}'`;
+      if (validationErrors) {
+        validationErrors.push(msg);
+      } else {
+        warn(`  [Error on Slide ${slideNumber}] Invalid value for 'question_role': '${v}'.`);
+      }
       return '';
     }
   }
@@ -218,10 +224,12 @@ export function extractVerbatimMultipart(collectedTexts, slideNumber, allKnownFi
   return [valuesStr, numbersStr];
 }
 
-export function extractInfoFromSlide(slideText, slideNumber, fieldsToExtract, allKnownFields, warn) {
+export function extractInfoFromSlide(slideText, slideNumber, fieldsToExtract, allKnownFields, warn, validationErrors = null) {
   const res = {};
   for (const f of fieldsToExtract) {
-    res[f] = extractFieldValue(slideText, f, slideNumber, allKnownFields, warn);
+    res[f] = extractFieldValue(
+      slideText, f, slideNumber, allKnownFields, warn, validationErrors,
+    );
   }
 
   const exceptions = new Set([

@@ -44,6 +44,10 @@ export const VALID_QUESTION_ROLES = [
   'interactive_example', 'interactive example', 'example', 'checkpoint', 'practice', 'exam',
 ];
 
+export const LIVE_QUESTION_ROLES = new Set(['example', 'interactive_example']);
+export const WORKSHEET_QUESTION_ROLES = new Set(['checkpoint', 'practice']);
+export const EXAM_QUESTION_ROLE = 'exam';
+
 export const THANK_YOU_PATTERNS = [
   'thank you',
   'شكرًا جزيلًا',

@@ -117,6 +117,12 @@ const CANONICAL_SLIDE_TITLES = {
 
 export const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'activity', 'thank_you']);
 export const QUESTION_ROLES = new Set(['example', 'interactive_example']);
+export const VALID_QUESTION_ROLES = new Set([
+  'interactive_example', 'interactive example', 'example', 'checkpoint', 'practice', 'exam',
+]);
+export const LIVE_QUESTION_ROLES = new Set(['example', 'interactive_example']);
+export const WORKSHEET_QUESTION_ROLES = new Set(['checkpoint', 'practice']);
+export const EXAM_QUESTION_ROLE = 'exam';
 
 const CANONICAL_QUESTION_SLIDE_TITLES = {
   question: {
@@ -1237,23 +1243,138 @@ export function isThankYouRow(row) {
   return isThankYouTitle(row?.section_title);
 }
 
+export function normalizeQuestionRole(raw) {
+  return csvCellStr(raw).toLowerCase().replace(/ /g, '_');
+}
+
+export function liveSlideRoleFromRow(row) {
+  if (!row) return null;
+  let role = normalizeQuestionRole(row.question_role);
+  if (role === 'interactive') role = 'interactive_example';
+  if (LIVE_QUESTION_ROLES.has(role)) return role;
+  return null;
+}
+
+export function isWorksheetQuestionRow(row) {
+  if (!row) return false;
+  if (csvCellStr(row.slide_id)) return false;
+  if (!csvCellStr(row.question_id)) return false;
+  const role = normalizeQuestionRole(row.question_role);
+  if (WORKSHEET_QUESTION_ROLES.has(role)) return true;
+  return csvCellStr(row.question_placement).toLowerCase() === 'homework';
+}
+
+export function validateQuestionRoleValue(role, context = '') {
+  const normalized = normalizeQuestionRole(role);
+  if (!normalized) return null;
+  const raw = csvCellStr(role).toLowerCase();
+  if (VALID_QUESTION_ROLES.has(raw) || VALID_QUESTION_ROLES.has(normalized)) return null;
+  const prefix = context ? `${context}: ` : '';
+  return `${prefix}invalid question_role '${role}'`;
+}
+
+export function validateCsvQuestionRoles(rows) {
+  const errors = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const qid = csvCellStr(row.question_id);
+    const roleRaw = csvCellStr(row.question_role);
+    const role = normalizeQuestionRole(roleRaw);
+    const slideNum = csvCellStr(row.slide_number) || String(i + 1);
+    const label = slideNum ? `Row ${slideNum}` : `Row ${i + 1}`;
+    if (qid && !role) {
+      errors.push(`${label}: question_id '${qid}' exists but question_role is missing.`);
+      continue;
+    }
+    if (role && !qid) {
+      errors.push(`${label}: question_role '${roleRaw}' exists but question_id is missing.`);
+      continue;
+    }
+    if (qid && role) {
+      const err = validateQuestionRoleValue(roleRaw, label);
+      if (err) errors.push(err);
+    }
+  }
+  return errors;
+}
+
+export function validateLiveQuestionsCsvXml(rows, root, { lang, translateFn = (q) => q } = {}) {
+  const errors = [];
+  if (!root) return errors;
+  const langCode = normalizeLanguageCode(lang);
+  const slidesByQid = new Map();
+  for (const slide of [...root.querySelectorAll('slide')]) {
+    if (slide.getAttribute('slide_category') !== 'question') continue;
+    const qid = csvCellStr(slide.getAttribute('question_id'));
+    if (qid) slidesByQid.set(qid, slide);
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const qidRaw = csvCellStr(row.question_id);
+    if (!qidRaw || csvCellStr(row.slide_id)) continue;
+    const expectedRole = liveSlideRoleFromRow(row);
+    if (!expectedRole) continue;
+    const slideNum = csvCellStr(row.slide_number) || String(i + 1);
+    const formatted = formatQuestionPartId(qidRaw);
+    const translated = translateFn(formatted);
+    const xmlSlide = slidesByQid.get(translated) || slidesByQid.get(formatted);
+    if (!xmlSlide) {
+      errors.push(
+        `Slide ${slideNum}: live question '${qidRaw}' with question_role `
+        + `'${expectedRole}' not found in generated XML.`,
+      );
+      continue;
+    }
+    const actualRole = xmlRoleFromSlideElement(xmlSlide);
+    if (actualRole !== expectedRole) {
+      errors.push(
+        `Slide ${slideNum}: CSV question_role '${expectedRole}' does not match `
+        + `XML slide_role '${actualRole}' for question '${qidRaw}'.`,
+      );
+    }
+    const expectedTitle = canonicalQuestionSlideTitle(langCode, expectedRole);
+    const actualTitle = csvCellStr(xmlSlide.getAttribute('slide_title'));
+    if (actualTitle !== expectedTitle) {
+      errors.push(
+        `Slide ${slideNum}: XML slide_title '${actualTitle}' does not match `
+        + `expected '${expectedTitle}' for question_role '${expectedRole}'.`,
+      );
+    }
+  }
+  return errors;
+}
+
 export function texTypeFromRow(row, xmlSlideType = null) {
-  const purpose = row ? csvCellStr(row.slide_purpose).toLowerCase() : '';
   const xmlType = xmlSlideType ? csvCellStr(xmlSlideType).toLowerCase() : '';
 
-  if (purpose === 'video' || (row && csvCellStr(row.video_id))) return 'video';
-  if (['example', 'interactive_example', 'instructional', 'activity', 'title', 'toc', 'thank_you'].includes(purpose)) {
-    return ['instructional', 'activity'].includes(purpose) ? 'image' : purpose;
-  }
-  if (['instructional', 'activity'].includes(xmlType)) return 'image';
-  if (xmlType) return xmlType;
   if (row) {
+    const liveRole = liveSlideRoleFromRow(row);
+    if (liveRole) return liveRole;
+    if (csvCellStr(row.video_id)) return 'video';
     const sn = csvCellStr(row.slide_number);
     if (sn === '2') return 'toc';
     if (sn === '1') return 'title';
     if (isThankYouRow(row)) return 'thank_you';
   }
+
+  if (['instructional', 'activity'].includes(xmlType)) return 'image';
+  if (LIVE_QUESTION_ROLES.has(xmlType)) return xmlType;
+  if (xmlType) return xmlType;
   return 'image';
+}
+
+export function texSlideTitleFromRow(row, texType, lang, xmlTitle = null) {
+  const code = normalizeLanguageCode(lang);
+  const t = csvCellStr(texType).toLowerCase();
+  if (LIVE_QUESTION_ROLES.has(t)) return canonicalQuestionSlideTitle(code, t);
+  if (t === 'toc') return tocTitleForLanguage(code);
+  if (t === 'thank_you') return thankYouTitleForLanguage(code);
+  if (row) {
+    const title = csvCellStr(row.section_title);
+    if (title) return title;
+  }
+  return csvCellStr(xmlTitle) || 'Question';
 }
 
 export function slideTitleFromRow(row, xmlTitle = null) {
