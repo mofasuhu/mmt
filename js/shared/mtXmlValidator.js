@@ -155,7 +155,7 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     if (!worksheets.length) errors.push(`section ${sectionId}: missing direct <worksheet> child.`);
     for (const worksheet of worksheets) {
       if (!isTwelveDigitId(worksheet.getAttribute('worksheet_id'))) errors.push(`section ${sectionId}: worksheet_id must be a 12-digit ID.`);
-      if (!worksheet.querySelector(':scope > question')) errors.push(`section ${sectionId}: worksheet must contain at least one question.`);
+      if (!worksheet.querySelector(':scope > question')) warnings.push(`section ${sectionId}: worksheet has no questions.`);
     }
   }
 
