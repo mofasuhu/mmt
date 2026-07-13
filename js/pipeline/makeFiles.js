@@ -13,6 +13,7 @@ import {
   renderTocEntriesTex,
   rowsToCsv,
   THANK_YOU_TITLE_BY_LANGUAGE,
+  resolvePackageSourceSlideId,
   writeRemoteSourceSlideIdMarker,
   requireLanguageFromReportRow,
 } from '../shared/sessionCsv.js';
@@ -484,8 +485,12 @@ export async function runMakeFiles(ctx) {
 
       await vfs.mkdir(slideFolderPath, { recursive: true });
       createdFolders.add(packageSlideId);
-      if (packageSlideId !== sourceSlideId) {
-        await writeRemoteSourceSlideIdMarker(vfs, slideFolderPath, sourceSlideId);
+      const remoteSourceId = resolvePackageSourceSlideId(sourceSlideId, {
+        slideNumber,
+        csvRows: currentCsvRows,
+      });
+      if (remoteSourceId && remoteSourceId !== packageSlideId) {
+        await writeRemoteSourceSlideIdMarker(vfs, slideFolderPath, remoteSourceId);
       }
 
       if (

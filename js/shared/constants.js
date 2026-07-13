@@ -19,6 +19,10 @@ export const QUESTIONS_METADATA_API_TIMEOUT_SEC = 30;
 export const SHEETS_SPREADSHEET_ID = '1Qc9LrE54LyDzAB1sAyK6iBJDJUbT1Y3sh9-7MNSm85M';
 export const SHEETS_TEMP_TAB_NAME = 'temp';
 
+export const SKIP_VALIDATIONS_SPREADSHEET_ID = '1m-gKt3Y6ihjp9Py3GuwLfCuNq_PjUyP5IqJl3cS68Lo';
+export const SKIP_VALIDATIONS_TAB = 'skipping_validations';
+export const SKIP_VALIDATIONS_RANGE = 'A:C';
+
 export const SLIDE_FIELDS = [
   'slide_id', 'question_id', 'question_placement',
   'required_correct', 'attempt_window', 'homework', 'section_gp',
@@ -35,7 +39,8 @@ export const NEW_MODE_SLIDE_FIELDS = [
   'slide_id', 'section_id', 'question_id', 'question_role',
   'required_correct', 'attempt_window', 'section_gp',
   'video_id', 'video_title', 'timestamp', 'activity_id', 'verbatim', 'verbatim_listening',
-  'section_title', 'slide_title', 'section_type', 'exam_id', 'exam_title', 'duration',
+  'section_title', 'slide_title', 'section_type',
+  'exam_id', 'exam_title', 'duration',
 ];
 
 export const SECTION_ID_TAGS = new Set(['section_id']);

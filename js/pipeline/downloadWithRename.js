@@ -285,6 +285,9 @@ export async function downloadAllFromLinks(ctx) {
       ok: dl.ok,
       error: dl.error,
     });
+    if (typeof config.onDownloadProgress === 'function') {
+      config.onDownloadProgress(results.length, validRows.length);
+    }
   }
 
   return { ok: true, results };

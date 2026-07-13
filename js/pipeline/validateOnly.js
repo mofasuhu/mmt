@@ -6,7 +6,8 @@ import { downloadAllFromLinks } from './downloadWithRename.js';
 import { validatePresentationFile as validateSinglePptx } from './extractCsv.js';
 import { validatePresentationFile as validateMergedPptx } from './extractCsvMerged.js';
 import { validateSessionCsv, resetXmlBuilderCaches } from './xmlBuilder.js';
-import { isMergedPptxBasename } from '../shared/sessionCsv.js';
+import { csvCellStr, isMergedPptxBasename } from '../shared/sessionCsv.js';
+import { loadSkippingValidationsByMetasession } from '../shared/skippingValidations.js';
 import {
   initSectionsValidationResults,
   SECTIONS_VALIDATION_RESULTS_FILE,
@@ -17,6 +18,16 @@ export { SECTIONS_VALIDATION_RESULTS_FILE };
 
 function stamp() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function downloadProgressLine(done, total) {
+  const safeTotal = Math.max(Number(total) || 0, 1);
+  const safeDone = Math.min(Math.max(Number(done) || 0, 0), safeTotal);
+  const width = 24;
+  const filled = Math.round((width * safeDone) / safeTotal);
+  const bar = '█'.repeat(filled) + '░'.repeat(width - filled);
+  const pct = Math.round((100 * safeDone) / safeTotal);
+  return `Validate-only: downloading [${bar}] ${String(pct).padStart(3, ' ')}% (${safeDone}/${safeTotal})`;
 }
 
 function sessionLabel(report) {
@@ -49,12 +60,29 @@ function reportFromOutcome({ sourceUrl, pptxName, pptxErrors, outcome }) {
     metasessionErrors: [...(outcome.metasessionErrors || [])],
     sectionErrors: [],
     sectionWarnings: [],
+    permissionInfos: [],
     missingQuestionErrors: [],
     xmlOutputErrors: [],
     xmlOutputWarnings: [],
     downloadOk: true,
     downloadError: '',
   };
+}
+
+function permissionInfoLines(permissionsByMeta, metasessionId) {
+  if (!metasessionId || !permissionsByMeta) return [];
+  const permissions = permissionsByMeta.get(csvCellStr(metasessionId));
+  if (!permissions) return [];
+  const infos = [];
+  for (const tag of [...permissions.sessionTags].sort()) {
+    infos.push(`permission_tag '${tag}' applied for this session.`);
+  }
+  for (const sectionId of [...permissions.sectionTags.keys()].sort()) {
+    for (const tag of [...permissions.sectionTags.get(sectionId)].sort()) {
+      infos.push(`permission_tag '${tag}' applied for section ${sectionId}.`);
+    }
+  }
+  return infos;
 }
 
 function normalizePresentationUrl(url) {
@@ -78,6 +106,12 @@ function formatReportBlock(report) {
     lines.push(`  FAILED: ${report.downloadError}`);
     lines.push('');
     return `${lines.join('\n')}\n`;
+  }
+
+  if (report.permissionInfos?.length) {
+    lines.push('--- Permission tags applied ---');
+    for (const info of report.permissionInfos) lines.push(`  ✓ ${info}`);
+    lines.push('');
   }
 
   lines.push('--- PPTX / extraction ---');
@@ -169,9 +203,10 @@ function buildReportText({ linksCsvPath, reports, sessionBlocks, started, comple
 function collectSessionIssues(report) {
   const errors = [];
   const warnings = [];
+  const infos = [];
   if (!report.downloadOk) {
     errors.push(`Download: ${report.downloadError}`);
-    return { errors, warnings };
+    return { errors, warnings, infos };
   }
   for (const err of report.pptxErrors) errors.push(`PPTX: ${err}`);
   for (const err of report.csvErrors) errors.push(`CSV: ${err}`);
@@ -181,21 +216,25 @@ function collectSessionIssues(report) {
   for (const err of report.xmlOutputErrors) errors.push(`XML output: ${err}`);
   for (const warn of report.sectionWarnings) warnings.push(`Section warning: ${warn}`);
   for (const warn of report.xmlOutputWarnings) warnings.push(`XML output warning: ${warn}`);
-  return { errors, warnings };
+  for (const info of report.permissionInfos || []) infos.push(info);
+  return { errors, warnings, infos };
 }
 
 function logSessionResult(log, report) {
-  const { errors, warnings } = collectSessionIssues(report);
+  const { errors, warnings, infos } = collectSessionIssues(report);
   const label = sessionLabel(report);
   if (!sessionPassed(report)) {
     log(`  ❌ ${label}: FAILED`);
     for (const err of errors) log(`      ${err}`);
     for (const warn of warnings) log(`      ⚠️  ${warn}`);
+    for (const info of infos) log(`      ✓ ${info}`);
   } else if (warnings.length) {
     log(`  ⚠️  ${label}: PASSED (warnings)`);
     for (const warn of warnings) log(`      ${warn}`);
+    for (const info of infos) log(`      ✓ ${info}`);
   } else {
     log(`  ✅ ${label}: PASSED`);
+    for (const info of infos) log(`      ✓ ${info}`);
   }
 }
 
@@ -227,7 +266,15 @@ export async function runValidateOnly(ctx) {
   const quietCtx = {
     ...ctx,
     log: silentLog,
-    config: { ...config, validateOnlyQuiet: true },
+    config: {
+      ...config,
+      validateOnlyQuiet: true,
+      onDownloadProgress: (done, total) => {
+        if (typeof log === 'function') {
+          log(downloadProgressLine(done, total), { progress: true });
+        }
+      },
+    },
   };
 
   if (!(await vfs.exists(linksCsvPath))) {
@@ -251,11 +298,26 @@ export async function runValidateOnly(ctx) {
   resetXmlBuilderCaches();
   await initSectionsValidationResults(vfs);
 
+  let permissionsByMeta = null;
+  if (!ctx.googleSheets) {
+    throw new Error('Could not load skipping_validations sheet: Google Sheets API is not available.');
+  }
+  {
+    log('Loading skipping_validations permissions sheet...');
+    const [byMeta, permErrors] = await loadSkippingValidationsByMetasession(ctx.googleSheets);
+    if (permErrors.length) {
+      const message = permErrors.join('; ');
+      throw new Error(`Could not load skipping_validations sheet: ${message}`);
+    }
+    permissionsByMeta = byMeta;
+  }
+
   const linksText = await vfs.readText(linksCsvPath);
   const rowCount = Math.max(0, linksText.split('\n').filter((l) => l.trim()).length - 1);
-  log(`Validate-only: downloading ${rowCount} session(s)...`);
+  log(downloadProgressLine(0, rowCount), { progress: true });
 
   const download = await downloadAllFromLinks(quietCtx);
+  log(downloadProgressLine(download.results.length, rowCount), { progress: true });
   if (!download.ok) {
     throw new Error(download.error || 'Download orchestration failed');
   }
@@ -324,7 +386,12 @@ export async function runValidateOnly(ctx) {
 
       const validateCtx = {
         ...quietCtx,
-        config: { ...quietCtx.config, csvsPath, sessionsPath: sessionsDir },
+        config: {
+          ...quietCtx.config,
+          csvsPath,
+          sessionsPath: sessionsDir,
+          permissionsByMeta,
+        },
       };
 
       log(`[${i + 1}/${pptxNames.length}] ${pptxName}`);
@@ -379,6 +446,7 @@ export async function runValidateOnly(ctx) {
               metasessionDetailsCache: metasessionCache,
               writeReports: true,
               fatalMetasessionApi: false,
+              permissionsByMeta,
             });
             sessionReport.sectionErrors = sectionErrors;
             sessionReport.sectionWarnings = sectionWarnings;
@@ -390,6 +458,11 @@ export async function runValidateOnly(ctx) {
               sessionReport.metasessionIds = [metasessionId];
             }
           }
+
+          sessionReport.permissionInfos = permissionInfoLines(
+            permissionsByMeta,
+            sessionReport.metasessionId,
+          );
 
           reports.push(sessionReport);
           sessionBlocks.push(formatReportBlock(sessionReport));

@@ -1,12 +1,13 @@
 /** Validate PPTX filename tags against metasession API data. */
-import { csvCellStr } from './sessionCsv.js';
+import {
+  csvCellStr,
+  courseTypeFromApiData,
+  collectContentSectionTypesFromRows,
+  validatePptxMtypeForSession,
+} from './sessionCsv.js';
 import { SESSION_NUMBER_MAP } from './sessionNumberDict.js';
 
 const PPTX_NAME_RE = /^(?<country>[^_]+)_G(?<grade>\d+)_T(?<term>\d+)_(?<subject>.+)_S(?<session>\d+)_(?<mtype>.+)$/;
-
-const PPTX_TYPE_ALIASES = {
-  regular: 'full curriculum',
-};
 
 /**
  * @param {string} metasessionTitle
@@ -37,11 +38,6 @@ function normalizeTagToken(value) {
   return csvCellStr(value).toLowerCase();
 }
 
-function normalizePptxType(value) {
-  const token = normalizeTagToken(value);
-  return PPTX_TYPE_ALIASES[token] || token;
-}
-
 function normalizeNumberToken(value) {
   const text = csvCellStr(value);
   if (!text) return '';
@@ -52,10 +48,14 @@ function normalizeNumberToken(value) {
 /**
  * @param {string} stem
  * @param {object} apiData
- * @param {{ stemLabel?: string }} [opts]
+ * @param {{ stemLabel?: string, slides?: Record<string, string>[], csvRows?: Record<string, string>[] }} [opts]
  * @returns {string[]}
  */
-export function validatePptxNameAgainstApi(stem, apiData, { stemLabel = '' } = {}) {
+export function validatePptxNameAgainstApi(stem, apiData, {
+  stemLabel = '',
+  slides = null,
+  csvRows = null,
+} = {}) {
   const errors = [];
   const label = stemLabel || stem.replace(/\.pptx$/i, '').trim();
   const prefix = `PPTX name (${label})`;
@@ -115,14 +115,11 @@ export function validatePptxNameAgainstApi(stem, apiData, { stemLabel = '' } = {
     );
   }
 
-  const fileType = normalizePptxType(tags.mtype);
-  const apiType = normalizePptxType(csvCellStr(apiData?.metasession_type));
-  if (apiType && fileType !== apiType) {
-    errors.push(
-      `${prefix}: type '${tags.mtype}' does not match API metasession_type `
-      + `'${apiData?.metasession_type}'`,
-    );
-  }
+  const courseType = courseTypeFromApiData(apiData);
+  const rows = csvRows || slides || [];
+  const [sectionTypes, secErrors] = collectContentSectionTypesFromRows(rows, courseType);
+  errors.push(...secErrors);
+  errors.push(...validatePptxMtypeForSession(courseType, sectionTypes, tags.mtype));
 
   return errors;
 }

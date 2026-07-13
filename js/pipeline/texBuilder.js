@@ -147,6 +147,12 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
       if (sub.tagName === 'worksheet') continue;
       if (sub.tagName === 'slide') {
         lines.push(`${indent}    ${formatSlide(sub)}`);
+      } else if (sub.tagName === 'slide_group') {
+        for (const groupChild of sub.children) {
+          if (groupChild.tagName === 'slide') {
+            lines.push(`${indent}    ${formatSlide(groupChild)}`);
+          }
+        }
       }
     }
 
@@ -184,6 +190,12 @@ export async function buildTexFromXml(xmlString, xmlFilenameStem, vfs) {
           texParts.push(...processSectionElement(child, '        '));
         } else if (child.tagName === 'slide') {
           texParts.push(`        ${formatSlide(child)}`);
+        } else if (child.tagName === 'slide_group') {
+          for (const groupChild of child.children) {
+            if (groupChild.tagName === 'slide') {
+              texParts.push(`        ${formatSlide(groupChild)}`);
+            }
+          }
         }
       }
 

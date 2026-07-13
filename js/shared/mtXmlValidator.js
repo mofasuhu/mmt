@@ -1,17 +1,24 @@
 import {
   canonicalQuestionSlideTitle,
   csvCellStr,
-  expectedSectionTypeForMetasessionType,
   isPlainTwelveDigitId,
+  isRule40Exempt,
   isTwelveDigitId,
-  metasessionTypeLabel,
-  validateMetasessionTypeSupported,
+  permissionsForMetasession,
+  PermissionContext,
+  validateSessionContentRulesFromXml,
+  validateXmlMetasessionTypeSupported,
+  validateSectionsForXmlMetasessionType,
+  validateSeasonFromApi,
 } from './sessionCsv.js';
 import { QMS_QUESTION_METADATA_URL } from './constants.js';
+import { getRawMetasessionData } from './metasessionApi.js';
+import { loadSkippingValidationsByMetasession } from './skippingValidations.js';
 
 const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'activity', 'thank_you']);
 const QUESTION_ROLES = new Set(['example', 'interactive_example']);
 const QUESTION_ID_RE = /^(\d{12})\.(\d{2})$/;
+const SLIDE_GROUP_PAGES = new Set(['single', 'multiple']);
 
 export function areQuestionTypesCompatible(xmlType, apiType) {
   const x = csvCellStr(xmlType);
@@ -20,28 +27,6 @@ export function areQuestionTypesCompatible(xmlType, apiType) {
   if (x === 'frq' && ['frq', 'frq_ai', 'short_answer', 'essay'].includes(a)) return true;
   if (x === 'gap' && ['gap', 'gapText'].includes(a)) return true;
   return false;
-}
-
-function expectedSeason(grade, term, metasessionType) {
-  const g = Number.parseInt(grade, 10);
-  const t = Number.parseInt(term, 10);
-  if (!Number.isFinite(g) || !Number.isFinite(t)) return null;
-  let label = metasessionTypeLabel(metasessionType).toLowerCase();
-  if (label === 'full curriculum') label = 'regular';
-  if (g >= 1 && g <= 11) {
-    if (label === 'foundation') return '1';
-    if (t === 0) return '1';
-    if (t === 1 && label === 'regular') return '2';
-    if (t === 1 && label === 'final revision') return '3';
-    if (t === 2 && label === 'regular') return '4';
-    if (t === 2 && label === 'final revision') return '5';
-  }
-  if (g === 12 && t === 0) {
-    if (label === 'foundation') return '6';
-    if (label === 'regular') return '7';
-    if (label === 'final revision') return '8';
-  }
-  return null;
 }
 
 function questionOccurrences(root) {
@@ -76,9 +61,12 @@ async function fetchQuestionMetadata(baseIds, fetchFn = fetch) {
         });
         if (response.ok) {
           payload = await response.json();
-          break;
+          if (Array.isArray(payload)) break;
+          lastError = `unexpected response shape ${typeof payload}`;
+          payload = null;
+        } else {
+          lastError = `HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
         }
-        lastError = `HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
       } catch (e) {
         lastError = `${e.name || 'Error'}: ${e.message || e}`;
       }
@@ -105,17 +93,17 @@ function metaValue(metadata, key) {
   return csvCellStr(val);
 }
 
-export async function validateMtXmlText(xmlText, { fetchFn = fetch, validateApi = true } = {}) {
+export async function validateMtXmlText(xmlText, { fetchFn = fetch, validateApi = true, apiData = null, permissions = null } = {}) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, 'application/xml');
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
     return { errors: [`XML is not well formed: ${parseError.textContent || 'parse error'}`], warnings: [], summary: {} };
   }
-  return validateMtXmlDocument(doc, { fetchFn, validateApi });
+  return validateMtXmlDocument(doc, { fetchFn, validateApi, apiData, permissions });
 }
 
-export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi = true } = {}) {
+export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi = true, apiData = null, permissions = null } = {}) {
   const errors = [];
   const warnings = [];
   const summary = {};
@@ -133,33 +121,71 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     errors.push(`grade must be 1..12 without prefix/leading zero; got '${grade}'.`);
   }
   const metasessionType = csvCellStr(root.getAttribute('metasession_type'));
-  errors.push(...validateMetasessionTypeSupported(metasessionType));
-  const season = expectedSeason(grade, root.getAttribute('term') || '', metasessionType);
-  if (season && root.getAttribute('season') !== season) {
-    errors.push(`season must be '${season}' for metasession_type '${metasessionType}', grade ${grade}, term ${root.getAttribute('term')}; got '${root.getAttribute('season')}'.`);
+  errors.push(...validateXmlMetasessionTypeSupported(metasessionType));
+
+  let resolvedApiData = apiData;
+  if (!resolvedApiData && validateApi) {
+    const metasessionId = csvCellStr(root.getAttribute('metasession_id'));
+    if (metasessionId) {
+      resolvedApiData = await getRawMetasessionData(metasessionId, { fatal: false, fetchFn });
+    }
+  }
+  if (resolvedApiData) {
+    errors.push(...validateSeasonFromApi(resolvedApiData, root.getAttribute('season')));
+  } else if (validateApi) {
+    errors.push('Could not fetch metasession API data to validate season.');
   }
 
   const title = root.querySelector(':scope > metasession_title');
   if (!title?.textContent?.trim()) errors.push('<metasession_title> must exist and be non-empty.');
 
+  const perms = permissions instanceof PermissionContext ? permissions : new PermissionContext();
+  const sectionTypeValues = [];
+  const sectionIdValues = [];
   for (const section of [...root.querySelectorAll('section')]) {
     const sectionId = section.getAttribute('section_id') || '?';
     const stype = csvCellStr(section.getAttribute('section_type'));
-    const expected = expectedSectionTypeForMetasessionType(metasessionType);
-    if (expected === 'regular') {
-      if (!['regular', 'revision'].includes(stype)) errors.push(`section ${sectionId}: section_type must be regular or revision for Full Curriculum; got '${stype}'.`);
-    } else if (stype !== expected) {
-      errors.push(`section ${sectionId}: section_type must be '${expected}' for metasession_type '${metasessionType}'.`);
-    }
+    sectionTypeValues.push(stype);
+    sectionIdValues.push(sectionId);
     const worksheets = [...section.children].filter((el) => el.tagName === 'worksheet');
     if (!worksheets.length) errors.push(`section ${sectionId}: missing direct <worksheet> child.`);
     for (const worksheet of worksheets) {
       if (!isTwelveDigitId(worksheet.getAttribute('worksheet_id'))) errors.push(`section ${sectionId}: worksheet_id must be a 12-digit ID.`);
-      if (!worksheet.querySelector(':scope > question')) warnings.push(`section ${sectionId}: worksheet has no questions.`);
+      if (
+        !worksheet.querySelector(':scope > question')
+        && !perms.hasSectionPermission(sectionId, 'questionless_section')
+      ) {
+        warnings.push(`section ${sectionId}: worksheet has no questions.`);
+      }
     }
   }
+  errors.push(...validateSectionsForXmlMetasessionType(
+    metasessionType,
+    sectionTypeValues,
+    { sectionIds: sectionIdValues },
+  ));
 
   if (root.querySelector('checkpoint')) errors.push('Generated new XML must not contain <checkpoint> tags.');
+
+  const seenSlideGroupIds = new Set();
+  for (const group of [...root.querySelectorAll('slide_group')]) {
+    const groupId = csvCellStr(group.getAttribute('slide_group_id'));
+    const pages = csvCellStr(group.getAttribute('pages'));
+    const label = `slide_group ${groupId || '?'}`;
+    if (!isPlainTwelveDigitId(groupId)) errors.push(`${label}: slide_group_id must be a plain 12-digit ID.`);
+    if (!SLIDE_GROUP_PAGES.has(pages)) errors.push(`${label}: pages must be 'single' or 'multiple'.`);
+    if (groupId) {
+      if (seenSlideGroupIds.has(groupId)) errors.push(`${label}: duplicate slide_group_id.`);
+      else seenSlideGroupIds.add(groupId);
+    }
+    const childSlides = [...group.children].filter((el) => el.tagName === 'slide');
+    for (const child of [...group.children]) {
+      if (child.tagName !== 'slide') {
+        errors.push(`${label}: only <slide> children allowed; found <${child.tagName}>.`);
+      }
+    }
+    if (!childSlides.length) warnings.push(`${label}: has no child slides.`);
+  }
 
   for (const slide of [...root.querySelectorAll('slide')]) {
     const sn = slide.getAttribute('slide_number') || '?';
@@ -197,6 +223,7 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     if (child.tagName === 'slide' && child.getAttribute('slide_role') === 'thank_you') thankSeen = true;
     if (child.tagName === 'exam' && !thankSeen) errors.push('<exam> must appear after the thank-you slide.');
   }
+  if (!thankSeen) errors.push('missing thank-you slide.');
   for (const exam of [...root.querySelectorAll(':scope > exam')]) {
     for (const attr of ['exam_id', 'exam_title', 'duration']) {
       if (!csvCellStr(exam.getAttribute(attr))) errors.push(`<exam> missing required attribute '${attr}'.`);
@@ -205,10 +232,7 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     if (!exam.querySelector(':scope > question')) errors.push(`exam ${exam.getAttribute('exam_id') || '?'}: must contain at least one question.`);
   }
 
-  const hasRevisionSection = [...root.querySelectorAll('section')]
-    .some((section) => section.getAttribute('section_type') === 'revision');
-  const examRequired = metasessionType === 'Final Revision' ||
-    (metasessionType === 'Full Curriculum' && hasRevisionSection);
+  const examRequired = metasessionType.toLowerCase() === 'revision';
   if (examRequired && !root.querySelector(':scope > exam')) {
     errors.push('exam required by session type/section_type but no exam source was found in PPTX.');
   }
@@ -230,9 +254,11 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     }
   }
 
+  let metadataById = new Map();
   if (validateApi && baseIds.length) {
     const { metadata, errors: apiErrors } = await fetchQuestionMetadata(baseIds, fetchFn);
     errors.push(...apiErrors);
+    metadataById = metadata;
     for (const occurrence of occurrences) {
       const meta = metadata.get(occurrence.baseId);
       if (!meta) continue;
@@ -258,9 +284,25 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
     }
   }
 
+  if (validateApi) {
+    const perms = permissions instanceof PermissionContext ? permissions : new PermissionContext();
+    const needsRule40 = (
+      metasessionType.toLowerCase() === 'regular'
+      && !isRule40Exempt(grade, csvCellStr(root.getAttribute('subject')))
+      && !perms.hasSessionPermission('mcq_free_percentage')
+    );
+    errors.push(...validateSessionContentRulesFromXml(root, {
+      xmlMetasessionType: metasessionType,
+      metadataById: needsRule40 ? metadataById : null,
+      grade,
+      subject: csvCellStr(root.getAttribute('subject')),
+      permissions: perms,
+    }));
+  }
+
   const liveGroups = new Map();
   for (const section of [...root.querySelectorAll('section')]) {
-    for (const slide of [...section.children].filter((el) => el.tagName === 'slide')) {
+    for (const slide of [...section.querySelectorAll('slide')]) {
       if (slide.getAttribute('slide_category') !== 'question') continue;
       const match = csvCellStr(slide.getAttribute('question_id')).match(QUESTION_ID_RE);
       if (!match) continue;
@@ -297,15 +339,36 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
 }
 
 export async function validateXmlOutputs(ctx) {
-  const { vfs, log, config = {} } = ctx;
+  const { vfs, log, googleSheets, config = {} } = ctx;
   const fetchFn = config.fetchFn || fetch;
   const xmlPaths = (await vfs.glob('xml/*.xml')).sort();
   if (!xmlPaths.length) throw new Error("No XML files found in 'xml/'.");
+
+  let permissionsByMeta = config.permissionsByMeta || null;
+  if (!permissionsByMeta) {
+    const [loadedPermissionsByMeta, permissionErrors] = await loadSkippingValidationsByMetasession(googleSheets);
+    if (permissionErrors.length) {
+      for (const err of permissionErrors) log(`ERROR: skipping_validations: ${err}`);
+      throw new Error('Could not load skipping_validations sheet.');
+    }
+    permissionsByMeta = loadedPermissionsByMeta;
+  }
+
   const allErrors = [];
   const allWarnings = [];
   for (const xmlPath of xmlPaths) {
     const name = xmlPath.split('/').pop();
-    const result = await validateMtXmlText(await vfs.readText(xmlPath), { fetchFn });
+    const xmlText = await vfs.readText(xmlPath);
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xmlText, 'application/xml');
+    const root = doc.documentElement;
+    const metasessionId = root?.tagName === 'metasession'
+      ? csvCellStr(root.getAttribute('metasession_id'))
+      : '';
+    const result = await validateMtXmlText(xmlText, {
+      fetchFn,
+      permissions: permissionsForMetasession(permissionsByMeta, metasessionId),
+    });
     allErrors.push(...result.errors.map((err) => `${name}: ${err}`));
     allWarnings.push(...result.warnings.map((warn) => `${name}: ${warn}`));
   }

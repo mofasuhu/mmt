@@ -6,8 +6,10 @@ import {
   loadSessionRows,
   normalizeSectionType,
   isSectionId,
-  skipSectionQuestionValidation,
+  skipSectionQuestionValidationForSession,
   validateSessionSectionCoverage,
+  courseTypeFromApiData,
+  computedMetasessionTypeForSession,
 } from './sessionCsv.js';
 
 export const SECTIONS_VALIDATION_RESULTS_FILE = 'sections_validation_results.txt';
@@ -147,6 +149,7 @@ export async function validateSectionAgainstMetasession(
     csvBasename = '',
     questionIdsNote = '',
     sectionType = 'regular',
+    xmlMetasessionType = null,
     fetchFn = fetch,
     log = console.log,
   } = {},
@@ -192,7 +195,9 @@ export async function validateSectionAgainstMetasession(
   }
 
   const normalizedSectionType = normalizeSectionType(sectionType);
-  const questionCheckSkipped = skipSectionQuestionValidation(normalizedSectionType);
+  const questionCheckSkipped = xmlMetasessionType
+    ? skipSectionQuestionValidationForSession(xmlMetasessionType)
+    : false;
   const usedUnique = [...new Set(usedQuestionIds.filter(Boolean).map(String))].sort();
   const matchedQids = usedUnique.filter((q) => apiQuestionIds.has(q));
   const missingQids = usedUnique.filter((q) => !apiQuestionIds.has(q));
@@ -231,7 +236,7 @@ export async function validateSectionAgainstMetasession(
       block += `\nSummary: ${okCount} matched, ${mismatchCount} mismatch(es), ${fieldRows.length - okCount - mismatchCount} skipped.\n\n`;
       block += '--- Question IDs ---\n';
       if (questionCheckSkipped) {
-        block += '  Question-id cross-check SKIPPED (section_type=revision or foundation).\n\n';
+        block += '  Question-id cross-check SKIPPED (session kind is revision or foundation).\n\n';
       } else {
         if (questionIdsNote) block += `  ${questionIdsNote}\n`;
         block += `  CSV and section API question_ids must match exactly (section_type=${normalizedSectionType}); unused API ids fail validation.\n`;
@@ -324,6 +329,25 @@ export async function validateSectionsInCsv(
   sectionMap = applyQuestionIdTransform(sectionMap, questionIdTransform);
   const sectionTypes = collectSectionTypesFromRows(rows);
   const metasessionData = await getRawMetasessionData(metasessionId, { fatal: false, log: logFn });
+  const courseType = courseTypeFromApiData(metasessionData);
+  const [xmlMetasessionType, typeErrors] = computedMetasessionTypeForSession(courseType, rows);
+  if (typeErrors.length) {
+    if (writeReports) {
+      const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      const body = [
+        `${'-'.repeat(80)}`,
+        `Checked at: ${stamp}`,
+        `CSV file: ${csvPath.split('/').pop()}`,
+        `Metasession ID: ${metasessionId}`,
+        'Result: FAILED — session type resolution',
+        ...typeErrors.map((err) => `  - ${err}`),
+        '',
+      ].join('\n');
+      await appendResults(vfs, SECTIONS_VALIDATION_RESULTS_FILE, `${body}\n`);
+    }
+    return { errors: typeErrors, warnings: [] };
+  }
+
   const allErrors = [];
   const allWarnings = [];
   for (const [sectionId, qids] of Object.entries(sectionMap)) {
@@ -334,6 +358,7 @@ export async function validateSectionsInCsv(
       csvBasename: csvPath.split('/').pop(),
       questionIdsNote,
       sectionType: sectionTypes[sectionId] || 'regular',
+      xmlMetasessionType,
       fetchFn: fetchImpl,
       log: logFn,
     });

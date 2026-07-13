@@ -516,7 +516,7 @@ export async function runCopySlidesContent(ctx) {
   }
 
   log('\nStarting file copy and injection process...');
-  /** @type {Record<string, string[]>} */
+  /** @type {Record<string, Array<{folderId: string, originalId: string}>>} */
   const matchedIdsBySession = {};
 
   for (const sessionFolder of existingSessions) {
@@ -549,7 +549,10 @@ export async function runCopySlidesContent(ctx) {
         } else {
           log(`- Match found for ${folderId}. Syncing files...`);
         }
-        matchedIdsBySession[sessionPath].push(folderId);
+        matchedIdsBySession[sessionPath].push({
+          folderId,
+          originalId: remoteSourceId || folderId,
+        });
 
         let remoteTexContent = '';
         let foundRemoteTex = false;
@@ -612,24 +615,30 @@ export async function runCopySlidesContent(ctx) {
   if (!totalTargets) {
     log('No remote-matched slides to reassign.');
   } else {
-    for (const [sessionPath, matchedIds] of Object.entries(matchedIdsBySession)) {
-      if (!matchedIds.length) continue;
+    for (const [sessionPath, matchedEntries] of Object.entries(matchedIdsBySession)) {
+      if (!matchedEntries.length) continue;
       log(`\nSession: ${sessionPath.split('/').pop()}`);
-      for (const oldId of matchedIds) {
-        log(`- Requesting new ID for ${oldId}...`);
+      for (const entry of matchedEntries) {
+        const folderId = entry.folderId;
+        const originalId = entry.originalId || folderId;
+        log(`- Requesting new ID for ${folderId}...`);
         const newId = await fetchNewId(ctx);
         if (!newId) {
-          log(`- Skipping ${oldId}: could not obtain a new ID.`);
+          log(`- Skipping ${folderId}: could not obtain a new ID.`);
           continue;
         }
-        if (newId === oldId) {
-          log(`- New ID equals old ID (${oldId}); nothing to do.`);
+        if (newId === folderId) {
+          log(`- New ID equals old ID (${folderId}); nothing to do.`);
           continue;
         }
-        log(`- ${oldId} -> ${newId}`);
-        if (await renameSlideId(ctx, sessionPath, oldId, newId)) {
+        if (originalId !== folderId) {
+          log(`- ${folderId} -> ${newId} (sheet log: ${originalId} -> ${newId})`);
+        } else {
+          log(`- ${folderId} -> ${newId}`);
+        }
+        if (await renameSlideId(ctx, sessionPath, folderId, newId)) {
           totalRenamed += 1;
-          logIdChangeToSheet(ctx, oldId, newId);
+          logIdChangeToSheet(ctx, originalId, newId);
         }
       }
     }

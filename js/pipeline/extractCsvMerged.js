@@ -32,7 +32,7 @@ import {
   rowsToCsv,
   validatePracticeQuestionTypesFromRows,
   processQuestionIdsFromApi,
-  validateSectionTypesForMetasessionType,
+  validateSectionTypesForCourseType,
   validateQuestionRoleValue,
   normalizeVideoThumbnailTs,
   shouldUseSectionPlaceholderTitle,
@@ -43,8 +43,25 @@ import {
   localizeCanonicalSlideTitle,
   requireLanguageFromReportRow,
   cleanedSessionTitleFromReportRow,
+  courseTypeFromApiData,
+  monoRowsFromBilingualSlides,
+  computedMetasessionTypeForSession,
+  extractBareQuestionIdLines,
+  resolveSectionTypeFromSlide,
+  isBilingualExamMarkerSlide,
+  bilingualExamMarkerPurityErrors,
+  resolveBilingualExamMarkerFields,
+  resolveMonoExamMarkerFields,
+  normalizeQuestionIdBase,
+  normalizeQuestionRole,
+  permissionsForMetasession,
+  validateSessionContentRules,
+  collectBaseQuestionIds,
+  fetchQuestionMetadataByParentIds,
+  isRule40Exempt,
 } from '../shared/sessionCsv.js';
-import { getMetasessionReportRow, getRawMetasessionData } from '../shared/metasessionApi.js';
+import { loadSkippingValidationsByMetasession } from '../shared/skippingValidations.js';
+import { getMetasessionReportRow, getRawMetasessionData, setReportClassType } from '../shared/metasessionApi.js';
 import { validatePptxNameAgainstApi } from '../shared/pptxNameValidator.js';
 import { openPresentationFromVfs } from '../pptx/openPresentation.js';
 import { getNumeralConvention, collectSlideTexts } from '../pptx/tagParser.js';
@@ -94,8 +111,9 @@ const NEW_MODE_MERGED_FIELDS = [
   'en_metasession_id', 'ar_metasession_id',
   'en_exam_id', 'ar_exam_id',
   'en_exam_title', 'ar_exam_title',
+  'exam_id', 'exam_title', 'duration',
   'en_duration', 'ar_duration',
-  'section_type',
+  'section_type', 'ar_section_type', 'en_section_type',
 ];
 
 const LEGACY_META_FIELDS = [
@@ -383,7 +401,7 @@ function extractInfoFromSlideLegacy(slideText, slideNumber, warn) {
     res[f] = extractMergedFieldValue(slideText, f, LEGACY_MERGED_FIELDS);
   }
   if (res.question_id) {
-    res.question_id = res.question_id.replace(/checkpoint/gi, '').trim();
+    res.question_id = normalizeQuestionIdBase(res.question_id) || '';
   }
   res.question_placement = normalizeQuestionPlacement(
     res.question_placement || '', slideNumber, warn,
@@ -426,7 +444,7 @@ function extractInfoFromSlideNewMode(slideText, slideNumber) {
     if (!res.video_title) res.video_title = bareVtitle;
   }
   if (res.question_role) {
-    res.question_role = res.question_role.toLowerCase().trim();
+    res.question_role = normalizeQuestionRole(res.question_role);
   }
   return res;
 }
@@ -589,7 +607,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         const allowedCompanions = new Set([
           ...SECTION_TITLE_TAGS,
           ...SECTION_ID_TAGS,
-          'section_type',
+          'section_type', 'ar_section_type', 'en_section_type',
         ]);
         if (slideNumber === 1) {
           allowedCompanions.add('ar_metasession_id');
@@ -613,6 +631,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       slideData.en_slide_purpose = enPurpose;
       slideData.ar_slide_purpose = arPurpose;
       slideData.slide_number = slideNumber;
+      slideData._slide_text = fullSlideText;
 
       if (slideNumber === 1) {
         for (const metaErr of validatePptxSlide1MergedMetasessionIds(
@@ -673,6 +692,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let previousWasCheckpoint = false;
     let postQuestionSectionActive = false;
     let postThankExamActive = false;
+    let examExpectQuestions = false;
+    let currentExamMarker = {};
 
     let defaultRequiredCorrect = '3';
     let defaultAttemptWindow = '5';
@@ -696,36 +717,84 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const isAfterThankYou = thankYouRawIndex !== null && slideIdx > thankYouRawIndex;
       const questionRole = (slide.question_role || '').trim().toLowerCase().replace(/ /g, '_');
       const qid = (slide.question_id || '').trim();
-      const arExamValues = [
-        (slide.ar_exam_id || '').trim(),
-        (slide.ar_exam_title || '').trim(),
-        (slide.ar_duration || '').trim(),
-      ];
-      const enExamValues = [
-        (slide.en_exam_id || '').trim(),
-        (slide.en_exam_title || '').trim(),
-        (slide.en_duration || '').trim(),
-      ];
-      const hasExamMarkerTags = arExamValues.some(Boolean) || enExamValues.some(Boolean);
-      const isExamMarker = hasExamMarkerTags && !qid;
+      const isExamMarker = isBilingualExamMarkerSlide(slide);
       if (isAfterThankYou) {
         if (isExamMarker) {
-          if (!(arExamValues.every(Boolean) && enExamValues.every(Boolean))) {
+          if (examExpectQuestions) {
             slideValidationErrors.push(
-              `Slide ${slideNumber}: bilingual exam marker after thank-you must include `
-              + 'ar_exam_id, ar_exam_title, ar_duration, en_exam_id, en_exam_title, and en_duration.',
+              `Slide ${slideNumber}: exam block must be exactly 2 slides `
+              + '(marker + questions); found another marker before questions slide.',
             );
+            examExpectQuestions = false;
             postThankExamActive = false;
             continue;
           }
-          postThankExamActive = true;
-        } else if (questionRole === 'exam' && qid) {
-          if (!postThankExamActive) {
-            slideValidationErrors.push(
-              `Slide ${slideNumber}: exam question after thank-you appears before a valid exam marker.`,
-            );
+          const markerCtx = `Slide ${slideNumber}`;
+          slideValidationErrors.push(...bilingualExamMarkerPurityErrors(slide, { context: markerCtx }));
+          const [resolvedMarker, markerErrors] = resolveBilingualExamMarkerFields(slide, { context: markerCtx });
+          slideValidationErrors.push(...markerErrors);
+          if (markerErrors.length) {
+            postThankExamActive = false;
+            examExpectQuestions = false;
             continue;
           }
+          for (const [key, val] of Object.entries(resolvedMarker)) {
+            if (val) slide[key] = val;
+          }
+          postThankExamActive = true;
+          examExpectQuestions = true;
+          currentExamMarker = { ...resolvedMarker };
+        } else if (examExpectQuestions) {
+          const bareIds = extractBareQuestionIdLines(slide._slide_text || '');
+          if (qid || questionRole) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: exam questions slide must use tagless `
+              + 'newline-separated 12-digit IDs (no question_id / question_role tags).',
+            );
+            examExpectQuestions = false;
+            postThankExamActive = false;
+            continue;
+          }
+          if (!bareIds.length) {
+            slideValidationErrors.push(
+              `Slide ${slideNumber}: exam questions slide must contain at least one `
+              + 'bare 12-digit question ID.',
+            );
+            examExpectQuestions = false;
+            postThankExamActive = false;
+            continue;
+          }
+          for (const examQid of bareIds) {
+            processedSlides.push({
+              slide_number: slideNumber,
+              question_id: examQid,
+              question_role: 'exam',
+              ar_slide_id: '',
+              en_slide_id: '',
+              ar_slide_title: canonicalQuestionSlideTitle('ar', 'exam'),
+              en_slide_title: canonicalQuestionSlideTitle('en', 'exam'),
+              ar_section_id: '',
+              en_section_id: '',
+              section_type: '',
+              question_placement: '',
+              required_correct: '',
+              attempt_window: '',
+              ar_exam_id: currentExamMarker.ar_exam_id || '',
+              en_exam_id: currentExamMarker.en_exam_id || '',
+              ar_exam_title: currentExamMarker.ar_exam_title || '',
+              en_exam_title: currentExamMarker.en_exam_title || '',
+              ar_duration: currentExamMarker.ar_duration || '',
+              en_duration: currentExamMarker.en_duration || '',
+            });
+          }
+          examExpectQuestions = false;
+          continue;
+        } else if (isExamMarker || qid || questionRole === 'exam') {
+          slideValidationErrors.push(
+            `Slide ${slideNumber}: unexpected post-thank-you exam content; `
+            + 'each exam block must be exactly 2 slides (marker + questions).',
+          );
+          continue;
         } else {
           continue;
         }
@@ -757,8 +826,13 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         const enSid = (slide.en_section_id || '').trim();
         if (isSectionId(arSid)) currentArSectionId = arSid;
         if (isSectionId(enSid)) currentEnSectionId = enSid;
-        if (slide.section_type) {
-          currentSectionType = slide.section_type;
+        const [resolvedType, typeErrors] = resolveSectionTypeFromSlide(
+          slide,
+          { bilingual: true, context: `Slide ${slideNumber}` },
+        );
+        slideValidationErrors.push(...typeErrors);
+        if (resolvedType) {
+          currentSectionType = resolvedType;
           sectionTypeUsed = false;
         }
         if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
@@ -851,6 +925,13 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       processedSlides.push(slide);
     }
 
+    if (examExpectQuestions) {
+      slideValidationErrors.push(
+        'Last exam block is missing its questions slide '
+        + '(each exam block must be exactly 2 slides: marker + questions).',
+      );
+    }
+
     const keptSlideNumbers = new Set(processedSlides.map((slide) => slide.slide_number).filter(Boolean));
     keptSlideNumbers.add(1);
     keptSlideNumbers.add(2);
@@ -890,7 +971,6 @@ function validateMetasessionData(pptMetaData, reportMap, langPrefix) {
     language: 'Language',
     grade: 'Grade',
     term: 'Term',
-    metasession_type: 'Class Type',
     subject: 'Subject',
     country: 'Country',
   };
@@ -962,7 +1042,14 @@ function validateCsvFromRows(rows) {
   return { valid: validationErrors.length === 0, errors: validationErrors };
 }
 
-function validateCsvNewModeFromRows(rows) {
+async function validateCsvNewModeFromRows(rows, {
+  permissions = null,
+  courseType = '',
+  xmlMetasessionType = '',
+  grade = '',
+  subject = '',
+  fetchFn = fetch,
+} = {}) {
   const validationErrors = [];
   const idLocations = {};
   for (const row of rows) {
@@ -1008,9 +1095,11 @@ function validateCsvNewModeFromRows(rows) {
     }
 
     if (isExamMarker) {
-      if (!(examId && examTitle && duration)) {
-        validationErrors.push(`Row ${slideNum}: exam marker must include exam_id, exam_title, and duration.`);
-      }
+      const [, markerErrors] = resolveMonoExamMarkerFields(
+        { exam_id: examId, exam_title: examTitle, duration },
+        { context: `Row ${slideNum}` },
+      );
+      validationErrors.push(...markerErrors);
       if (examId && !isValidRawExamId(examId)) {
         validationErrors.push(`Row ${slideNum}: Invalid format for exam_id '${examId}'. Must be a 12-digit ID or 'new'.`);
       }
@@ -1062,6 +1151,29 @@ function validateCsvNewModeFromRows(rows) {
   }
 
   validationErrors.push(...validateSessionSectionCoverage(rows));
+
+  if (courseType && xmlMetasessionType) {
+    let metadataById = null;
+    const needsRule40 = (
+      csvCellStr(xmlMetasessionType).toLowerCase() === 'regular'
+      && !isRule40Exempt(grade, subject)
+      && !(permissions && permissions.hasSessionPermission('mcq_free_percentage'))
+    );
+    if (needsRule40) {
+      const allIds = collectBaseQuestionIds(rows);
+      const [metaMap, metaErrors] = await fetchQuestionMetadataByParentIds(allIds, { subject, fetchFn });
+      validationErrors.push(...metaErrors);
+      metadataById = metaMap;
+    }
+    validationErrors.push(...validateSessionContentRules(rows, {
+      courseType,
+      xmlMetasessionType,
+      metadataById,
+      grade,
+      subject,
+      permissions,
+    }));
+  }
 
   return { valid: validationErrors.length === 0, errors: validationErrors };
 }
@@ -1373,12 +1485,19 @@ async function validateSectionTitlesAgainstApi(vfs, csvPath, log, config) {
 
 async function processAndValidateCsvNewMode(
   vfs, rows, columns, csvPath, metasessionId, sessionReportMap, log, config,
+  {
+    permissionsByMeta = null,
+    courseType = '',
+    xmlMetasessionType = '',
+  } = {},
 ) {
   log(`\n-> Processing ${basename(csvPath)} (NEW MODE)...`);
   await saveToCsv(vfs, csvPath, columns, rows, log);
 
   const reportRow = sessionReportMap?.[metasessionId] || {};
   const subject = csvCellStr(reportRow.Subject);
+  const grade = csvCellStr(reportRow.Grade);
+  const permissions = permissionsForMetasession(permissionsByMeta, metasessionId);
 
   log('   Processing question IDs from QMS API...');
   const questionIdErrors = await applyQuestionTypeDuplication(
@@ -1411,7 +1530,14 @@ async function processAndValidateCsvNewMode(
   }
   log(`   Validating ${basename(csvPath)}...`);
   const { rows: parsedRows } = await readCsvFromVfs(vfs, csvPath);
-  const { valid, errors } = validateCsvNewModeFromRows(parsedRows);
+  const { valid, errors } = await validateCsvNewModeFromRows(parsedRows, {
+    permissions,
+    courseType,
+    xmlMetasessionType,
+    grade,
+    subject,
+    fetchFn: config.fetchFn || fetch,
+  });
   const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
     parsedRows,
     config.fetchFn || fetch,
@@ -1475,6 +1601,22 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
   }
 
   const sessionReportMap = {};
+
+  let permissionsByMeta = config.permissionsByMeta || null;
+  if (!permissionsByMeta && !googleSheets) {
+    abortPipeline(log, 'Could not load skipping_validations sheet.', [
+      'Google Sheets API is not available.',
+    ]);
+  }
+  if (!permissionsByMeta) {
+    log('   Loading skipping_validations permissions sheet...');
+    const [byMeta, permErrors] = await loadSkippingValidationsByMetasession(googleSheets);
+    if (permErrors.length) {
+      abortPipeline(log, 'Could not load skipping_validations sheet.', permErrors);
+    }
+    permissionsByMeta = byMeta;
+  }
+
   const processingSummary = [];
   const sheetsRowsToUpload = [];
   const seenSheetPairs = new Set();
@@ -1564,9 +1706,9 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
     }
 
     const pptxNameErrorsByMeta = {};
-    for (const [langKey, metaId, pptxStem] of [
-      ['AR', csvCellStr(slide1.ar_metasession_id), arPptxStem],
-      ['EN', csvCellStr(slide1.en_metasession_id), enPptxStem],
+    for (const [langKey, metaId, pptxStem, langPrefix] of [
+      ['AR', csvCellStr(slide1.ar_metasession_id), arPptxStem, 'ar'],
+      ['EN', csvCellStr(slide1.en_metasession_id), enPptxStem, 'en'],
     ]) {
       if (!metaId) continue;
       const apiData = await getRawMetasessionData(metaId, {
@@ -1575,10 +1717,11 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
         fatal: false,
       });
       if (!apiData) continue;
+      const monoRows = monoRowsFromBilingualSlides(allSlidesData, langPrefix);
       pptxNameErrorsByMeta[metaId] = validatePptxNameAgainstApi(
         pptxStem,
         apiData,
-        { stemLabel: `${langKey} stem` },
+        { stemLabel: `${langKey} stem`, csvRows: monoRows },
       );
     }
 
@@ -1620,11 +1763,16 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
           abortPipeline(log, `PPTX filename does not match metasession API for ${arMetaId}`, arNameErrors);
         }
       } else {
-        const arReport = sessionReportMap[arMetaId];
-        const arSectionTypeErrors = validateSectionTypesForMetasessionType(
-          csvCellStr(arReport?.['Class Type']),
-          { slides: allSlidesData },
-        );
+        const arApiData = await getRawMetasessionData(arMetaId, {
+          log,
+          fetchFn: config.fetchFn || fetch,
+          fatal: false,
+        });
+        const arCourseType = courseTypeFromApiData(arApiData);
+        const arMonoRows = monoRowsFromBilingualSlides(allSlidesData, 'ar');
+        const arSectionTypeErrors = validateSectionTypesForCourseType(arCourseType, {
+          csvRows: arMonoRows,
+        });
         if (arSectionTypeErrors.length > 0) {
           log('   [FAILURE] Metasession section_type validation failed (AR).');
           for (const err of arSectionTypeErrors) log(`     - ${err}`);
@@ -1637,19 +1785,42 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
             abortPipeline(log, `Invalid section_type for metasession ${arMetaId}`, arSectionTypeErrors);
           }
         } else {
-          const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, sessionReportMap);
-          const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
-          const arResult = await processAndValidateCsvNewMode(
-            vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
+          const [computedType, computedErrors] = computedMetasessionTypeForSession(
+            arCourseType,
+            arMonoRows,
           );
-          processingSummary.push({
-            filename: basename(arSavePath),
-            status: arResult.status,
-            errors: arResult.errors,
-          });
-          if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
-          else if (_abortOnError) {
-            abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+          if (computedErrors.length) {
+            log('   [FAILURE] Could not compute session type (AR).');
+            for (const err of computedErrors) log(`     - ${err}`);
+            processingSummary.push({
+              filename: `${arMetaId}_${arPptxStem}_ar.csv (Not Created)`,
+              status: 'FAILED',
+              errors: computedErrors,
+            });
+            if (_abortOnError) {
+              abortPipeline(log, `Invalid session type for metasession ${arMetaId}`, computedErrors);
+            }
+          } else {
+            if (computedType) setReportClassType(arMetaId, computedType);
+            const arRows = buildNewModeLangRows(allSlidesData, 'ar', arMetaId, sessionReportMap);
+            const arSavePath = joinPath(csvsPath, `${arMetaId}_${arPptxStem}_ar.csv`);
+            const arResult = await processAndValidateCsvNewMode(
+              vfs, arRows, NEW_MODE_COLUMNS, arSavePath, arMetaId, sessionReportMap, log, config,
+              {
+                permissionsByMeta,
+                courseType: arCourseType,
+                xmlMetasessionType: computedType || '',
+              },
+            );
+            processingSummary.push({
+              filename: basename(arSavePath),
+              status: arResult.status,
+              errors: arResult.errors,
+            });
+            if (arResult.status === 'VALID') await queueSheetRows(arSavePath);
+            else if (_abortOnError) {
+              abortPipeline(log, `CSV validation failed for ${basename(arSavePath)}`, arResult.errors);
+            }
           }
         }
       }
@@ -1669,11 +1840,16 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
           abortPipeline(log, `PPTX filename does not match metasession API for ${enMetaId}`, enNameErrors);
         }
       } else {
-        const enReport = sessionReportMap[enMetaId];
-        const enSectionTypeErrors = validateSectionTypesForMetasessionType(
-          csvCellStr(enReport?.['Class Type']),
-          { slides: allSlidesData },
-        );
+        const enApiData = await getRawMetasessionData(enMetaId, {
+          log,
+          fetchFn: config.fetchFn || fetch,
+          fatal: false,
+        });
+        const enCourseType = courseTypeFromApiData(enApiData);
+        const enMonoRows = monoRowsFromBilingualSlides(allSlidesData, 'en');
+        const enSectionTypeErrors = validateSectionTypesForCourseType(enCourseType, {
+          csvRows: enMonoRows,
+        });
         if (enSectionTypeErrors.length > 0) {
           log('   [FAILURE] Metasession section_type validation failed (EN).');
           for (const err of enSectionTypeErrors) log(`     - ${err}`);
@@ -1686,19 +1862,42 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
             abortPipeline(log, `Invalid section_type for metasession ${enMetaId}`, enSectionTypeErrors);
           }
         } else {
-          const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, sessionReportMap);
-          const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
-          const enResult = await processAndValidateCsvNewMode(
-            vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
+          const [computedType, computedErrors] = computedMetasessionTypeForSession(
+            enCourseType,
+            enMonoRows,
           );
-          processingSummary.push({
-            filename: basename(enSavePath),
-            status: enResult.status,
-            errors: enResult.errors,
-          });
-          if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
-          else if (_abortOnError) {
-            abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+          if (computedErrors.length) {
+            log('   [FAILURE] Could not compute session type (EN).');
+            for (const err of computedErrors) log(`     - ${err}`);
+            processingSummary.push({
+              filename: `${enMetaId}_${enPptxStem}_en.csv (Not Created)`,
+              status: 'FAILED',
+              errors: computedErrors,
+            });
+            if (_abortOnError) {
+              abortPipeline(log, `Invalid session type for metasession ${enMetaId}`, computedErrors);
+            }
+          } else {
+            if (computedType) setReportClassType(enMetaId, computedType);
+            const enRows = buildNewModeLangRows(allSlidesData, 'en', enMetaId, sessionReportMap);
+            const enSavePath = joinPath(csvsPath, `${enMetaId}_${enPptxStem}_en.csv`);
+            const enResult = await processAndValidateCsvNewMode(
+              vfs, enRows, NEW_MODE_COLUMNS, enSavePath, enMetaId, sessionReportMap, log, config,
+              {
+                permissionsByMeta,
+                courseType: enCourseType,
+                xmlMetasessionType: computedType || '',
+              },
+            );
+            processingSummary.push({
+              filename: basename(enSavePath),
+              status: enResult.status,
+              errors: enResult.errors,
+            });
+            if (enResult.status === 'VALID') await queueSheetRows(enSavePath);
+            else if (_abortOnError) {
+              abortPipeline(log, `CSV validation failed for ${basename(enSavePath)}`, enResult.errors);
+            }
           }
         }
       }

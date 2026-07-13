@@ -215,9 +215,28 @@ function parseVerbatimNumber(raw) {
 
 /**
  * @param {Record<string, string>[]} rows
- * @returns {Array<Array<[string, string, number, string]>>}
+ * @returns {Array<Array<[string, string, number, string, boolean]>>}
  */
-function multipartRunsByVerbatimNumber(rows) {
+function slideGroupChildIdsFromXmlText(xmlText) {
+  const ids = new Set();
+  if (!xmlText) return ids;
+  try {
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if (doc.querySelector('parsererror')) return ids;
+    for (const group of [...doc.querySelectorAll('slide_group')]) {
+      for (const slide of [...group.children]) {
+        if (slide.tagName !== 'slide') continue;
+        const slideId = csvCellStr(slide.getAttribute('slide_id'));
+        if (slideId) ids.add(slideId);
+      }
+    }
+  } catch {
+    /* ignore malformed/missing XML */
+  }
+  return ids;
+}
+
+function multipartRunsByVerbatimNumber(rows, groupedSlideIds = new Set()) {
   const runs = [];
   let currentRun = [];
   let expectedNext = null;
@@ -236,6 +255,9 @@ function multipartRunsByVerbatimNumber(rows) {
 
     const slideId = normalizeSlideIdFromCsv(row.slide_id);
     const slideNumber = csvCellStr(row.slide_number) || '?';
+    const alreadyGrouped = Boolean(
+      csvCellStr(row.package_source_slide_id) || groupedSlideIds.has(slideId),
+    );
 
     if (!slideId) {
       if (currentRun.length) runs.push(currentRun);
@@ -253,15 +275,15 @@ function multipartRunsByVerbatimNumber(rows) {
 
     if (num === 1) {
       if (currentRun.length) runs.push(currentRun);
-      currentRun = [[slideId, text, num, slideNumber]];
+      currentRun = [[slideId, text, num, slideNumber, alreadyGrouped]];
       expectedNext = 2;
     } else if (expectedNext != null && num === expectedNext) {
-      currentRun.push([slideId, text, num, slideNumber]);
+      currentRun.push([slideId, text, num, slideNumber, alreadyGrouped]);
       expectedNext = num + 1;
     } else {
       if (currentRun.length) runs.push(currentRun);
       if (num === 1) {
-        currentRun = [[slideId, text, num, slideNumber]];
+        currentRun = [[slideId, text, num, slideNumber, alreadyGrouped]];
         expectedNext = 2;
       } else {
         currentRun = [];
@@ -440,7 +462,16 @@ async function processSession(ctx, sessionFolder, csvPath) {
     }
   }
 
-  const multipartRuns = multipartRunsByVerbatimNumber(rows);
+  let groupedSlideIds = new Set();
+  const packageXmlPath = `${sessionFolder}/${metasessionStem}.xml`;
+  if (await vfs.isFile(packageXmlPath)) {
+    try {
+      groupedSlideIds = slideGroupChildIdsFromXmlText(await vfs.readText(packageXmlPath));
+    } catch {
+      groupedSlideIds = new Set();
+    }
+  }
+  const multipartRuns = multipartRunsByVerbatimNumber(rows, groupedSlideIds);
 
   if (!verbatimSlides.length && !listeningSlides.length && !multipartRuns.length) {
     return 0;
@@ -463,6 +494,9 @@ async function processSession(ctx, sessionFolder, csvPath) {
   }
 
   for (const run of multipartRuns) {
+    if (run.every((entry) => entry[4])) {
+      continue;
+    }
     const baseId = await fetchNew12DigitId(ctx);
     if (!baseId || !/^\d{12}$/.test(baseId)) {
       log('⚠ verbatim_multipart: could not get valid 12-digit ID, skipping run');

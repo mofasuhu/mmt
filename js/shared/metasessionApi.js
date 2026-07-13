@@ -1,6 +1,6 @@
 /** Metasession API client — port of metasession_api.py */
 
-import { normalizeMetasessionId, validateMetasessionTypeSupported } from './sessionCsv.js';
+import { normalizeMetasessionId, validateMetasessionTypeSupported, validateSeasonFromApi } from './sessionCsv.js';
 import { sessionNumberFromTitle } from './pptxNameValidator.js';
 
 const API_URL = 'https://admin.classes.nagwa.com/api/v1/metasessions/{metasession_id}/';
@@ -139,7 +139,7 @@ export function buildReportRow(apiData, { extended = false, metasessionId = '' }
 
   const row = {
     'Meta Session Number': metasessionNumber != null ? String(metasessionNumber) : '',
-    'Class Type': apiData.metasession_type || '',
+    'Class Type': apiData.metasession_type || '', // raw API type == course_type
     Title: metasessionTitle,
     Subject: subjectObj.name || '',
     Grade: gradeObj.title || '',
@@ -154,7 +154,7 @@ export function buildReportRow(apiData, { extended = false, metasessionId = '' }
     row['Meta Session Id'] = String(metasessionId);
     row['Meta Session Number'] = computedNumber != null ? String(computedNumber) : '';
     row['Meta Class Id'] = String(apiData.metaclass_id || '');
-    row['Class Type'] = String(apiData.metasession_type || 'regular');
+    row['Class Type'] = String(apiData.metasession_type || '');
     row['Language'] = String(languageObj.iso_code || '');
     row['Country'] = String(countryObj.iso_code || 'eg');
     row['Academic Year'] = String(apiData.academic_year || '');
@@ -198,6 +198,15 @@ export async function getRawMetasessionData(metasessionId, { fatal = true, log =
     return null;
   }
 
+  const seasonErrors = validateSeasonFromApi(apiData);
+  if (seasonErrors.length) {
+    for (const err of seasonErrors) log(`   [FATAL] ${err}`);
+    if (fatal) {
+      throw new Error(seasonErrors[0]);
+    }
+    return null;
+  }
+
   _rawCache.set(metasessionId, apiData);
   return apiData;
 }
@@ -219,4 +228,13 @@ export async function getMetasessionReportRow(
   const reportRow = buildReportRow(apiData, { extended, metasessionId });
   _cache.set(cacheKey, reportRow);
   return reportRow;
+}
+
+export function setReportClassType(metasessionId, classType) {
+  if (!metasessionId) return;
+  for (const [key, row] of _cache.entries()) {
+    if (key.startsWith(`${metasessionId}:`) && row) {
+      row['Class Type'] = classType;
+    }
+  }
 }

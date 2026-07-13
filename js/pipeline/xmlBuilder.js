@@ -4,7 +4,6 @@
 import {
   csvCellStr,
   normalizeSectionId,
-  normalizeSectionType,
   tocTitleForLanguage,
   localizeCanonicalSlideTitle,
   slideCategoryAndRole,
@@ -28,6 +27,17 @@ import {
   isWorksheetQuestionRow,
   validateLiveQuestionsCsvXml,
   requireLanguageFromReportRow,
+  normalizeGradeForXml,
+  courseTypeFromApiData,
+  validateSeasonFromApi,
+  collectContentSectionTypesFromRows,
+  xmlMetasessionTypeForCourseType,
+  sectionTypeForCourseType,
+  defaultSectionTypeForCourseType,
+  permissionsForMetasession,
+  collectInstructionalSlideGroupPlansForMainContent,
+  applySlideGroupMintedIds,
+  resolveSlideIdForSlideGroupRow,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -85,14 +95,7 @@ function stripTashkeel(text) {
     .replace(/\p{M}/gu, '');
 }
 
-function normalizeGradeForXml(gradeRaw) {
-  const raw = String(gradeRaw ?? '');
-  const match = /\d+/.exec(raw);
-  if (match) return String(parseInt(match[0], 10));
-  return raw;
-}
-
-function buildMetasessionRootAttributes(apiData, detailsRow) {
+function buildMetasessionRootAttributes(apiData, detailsRow, { xmlMetasessionType }) {
   const api = apiData || {};
   const details = detailsRow || {};
 
@@ -127,27 +130,24 @@ function buildMetasessionRootAttributes(apiData, detailsRow) {
   const subjectObj = api.subject || {};
   const subject = String(subjectObj.name || details.Subject || '');
 
-  const metasessionType = String(
-    api.metasession_type || details['Class Type'] || 'regular',
-  );
-
   const metaclassId = String(api.metaclass_id || details['Meta Class Id'] || '');
   const academicYear = String(api.academic_year || details['Academic Year'] || '');
 
-  let season;
-  if (api.season != null) {
-    season = String(api.season);
-  } else if (String(details.Season ?? '').trim()) {
-    season = String(details.Season);
-  } else {
-    season = getSeason(gradeNormalized, term, metasessionType);
+  if (api.season == null) {
+    throw new Error('Metasession API did not return season.');
+  }
+  const season = String(api.season);
+
+  const seasonErrors = validateSeasonFromApi(api, season);
+  if (seasonErrors.length) {
+    throw new Error(seasonErrors[0]);
   }
 
   return {
     metasession_id: String(details['Meta Session Id'] ?? ''),
     metasession_number: metasessionNum,
     metaclass_id: metaclassId,
-    metasession_type: metasessionType,
+    metasession_type: String(xmlMetasessionType),
     language,
     country,
     subject,
@@ -163,32 +163,6 @@ function renumberSlidesSequentially(metasession) {
   slides.forEach((slide, i) => {
     slide.setAttribute('slide_number', String(i + 1));
   });
-}
-
-function getSeason(grade, term, classType) {
-  let g = parseInt(grade, 10);
-  let t = parseInt(term, 10);
-  if (Number.isNaN(g) || Number.isNaN(t)) {
-    return '1';
-  }
-
-  const ct = String(classType).toLowerCase();
-  const classTypeKey = ct === 'full curriculum' ? 'regular' : ct;
-
-  if (g >= 1 && g <= 11) {
-    if (classTypeKey === 'foundation') return '1';
-    if (t === 0) return '1';
-    if (t === 1 && classTypeKey === 'regular') return '2';
-    if (t === 1 && classTypeKey === 'final revision') return '3';
-    if (t === 2 && classTypeKey === 'regular') return '4';
-    if (t === 2 && classTypeKey === 'final revision') return '5';
-  } else if (g === 12) {
-    if (t === 0 && classTypeKey === 'foundation') return '6';
-    if (t === 0 && classTypeKey === 'regular') return '7';
-    if (t === 0 && classTypeKey === 'final revision') return '8';
-  }
-
-  return '1';
 }
 
 function formatQuestionId(qId) {
@@ -404,6 +378,7 @@ export async function validateSessionCsv(
     metasessionDetailsCache = null,
     writeReports = true,
     fatalMetasessionApi = false,
+    permissionsByMeta = null,
   } = {},
 ) {
   const { log, config } = ctx;
@@ -484,7 +459,8 @@ export async function validateSessionCsv(
   if (!sectionErrors.length && !missingQuestionErrors.length) {
     try {
       const { document: xmlDoc } = await buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn);
-      const xmlValidation = await validateMtXmlDocument(xmlDoc, { fetchFn });
+      const permissions = permissionsForMetasession(permissionsByMeta, metasessionId);
+      const xmlValidation = await validateMtXmlDocument(xmlDoc, { apiData, fetchFn, permissions });
       xmlOutputErrors = xmlValidation.errors;
       xmlOutputWarnings = xmlValidation.warnings;
       const lang = requireLanguageFromReportRow(detailsRow);
@@ -686,8 +662,33 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     sessionRowsProcessed = sessionRows.map((r) => ({ ...r }));
   }
 
+  const courseType = courseTypeFromApiData(apiData);
+  const rowsForTypeScan = sessionRowsProcessed.map((row) => {
+    const out = {};
+    for (const [k, v] of Object.entries(row)) {
+      if (k != null) out[String(k).trim().toLowerCase()] = csvCellStr(v);
+    }
+    return out;
+  });
+  const [sectionTypes, sectionTypeErrors] = collectContentSectionTypesFromRows(
+    rowsForTypeScan,
+    courseType,
+  );
+  if (sectionTypeErrors.length) {
+    throw new Error(sectionTypeErrors.join('; '));
+  }
+  const [xmlMetasessionType, metaTypeErrors] = xmlMetasessionTypeForCourseType(
+    courseType,
+    sectionTypes,
+  );
+  if (metaTypeErrors.length) {
+    throw new Error(metaTypeErrors.join('; '));
+  }
+
   const doc = document.implementation.createDocument('', '', null);
-  const metaAttributes = buildMetasessionRootAttributes(apiData, detailsRow);
+  const metaAttributes = buildMetasessionRootAttributes(apiData, detailsRow, {
+    xmlMetasessionType,
+  });
   const metasession = createEl(doc, 'metasession', metaAttributes);
   doc.appendChild(metasession);
 
@@ -729,6 +730,36 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
       !isRecapTitle(String(r.section_title ?? '')) &&
       !wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
   );
+
+  const [slideGroupPlans, slideGroupByIndex] =
+    collectInstructionalSlideGroupPlansForMainContent(mainContent, sessionRowsProcessed);
+  if (slideGroupPlans.length) {
+    const idsNeeded = slideGroupPlans.reduce(
+      (sum, plan) => sum + 1 + plan.part_row_indices.length,
+      0,
+    );
+    const mintedGroupIds = await getNewIds(idsNeeded, fetchFn);
+    if (mintedGroupIds.length !== idsNeeded) {
+      log('Could not mint slide_group_id values for all multipart instructional groups.');
+    }
+    const rowByIndex = new Map();
+    for (let i = 0; i < sessionRowsProcessed.length; i += 1) {
+      rowByIndex.set(i, sessionRowsProcessed[i]);
+    }
+    applySlideGroupMintedIds(slideGroupPlans, mintedGroupIds, rowByIndex);
+    for (const plan of slideGroupPlans) {
+      for (const partIdx of plan.part_row_indices) {
+        const partRow = sessionRowsProcessed[partIdx];
+        if (!partRow) continue;
+        const oldId = csvCellStr(partRow.slide_id);
+        const newId = plan.part_id_map[oldId] || '';
+        if (newId) {
+          partRow.slide_id = newId;
+          partRow.package_source_slide_id = oldId;
+        }
+      }
+    }
+  }
 
   const sectionGroups = {};
   const pendingGroupEnds = {};
@@ -798,6 +829,138 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   let currentSectionGroupElement = null;
   let lastSectionTitle = '';
   let activeGroupName = null;
+
+  async function emitSlideFromContentRow(
+    parent,
+    emitIdx,
+    emitRow,
+    emitSectionTitle,
+  ) {
+    const emitQId = emitRow.question_id;
+    const normalizedEmitTitle = csvCellStr(emitSectionTitle).toLowerCase();
+    const emitVideoId = csvCellStr(emitRow.video_id);
+    const emitActivityId = csvCellStr(emitRow.activity_id);
+    const emitRowForRole = {
+      slide_id: csvCellStr(emitRow.slide_id),
+      question_id: csvCellStr(emitRow.question_id),
+      question_role: csvCellStr(emitRow.question_role),
+      question_placement: csvCellStr(emitRow.question_placement),
+    };
+
+    const isVideoRow =
+      isBlank(emitQId) &&
+      (emitVideoId || ['video', 'فيديو'].includes(normalizedEmitTitle));
+    const isActivityRow = isBlank(emitQId) && Boolean(emitActivityId);
+
+    if (isVideoRow && emitVideoId) {
+      const videoSlideId = (await getSlideId(emitVideoId, fetchFn)) || emitVideoId;
+      if (csvCellStr(emitRow.slide_id).toLowerCase() === 'new' && videoSlideId) {
+        sessionRowsProcessed[emitIdx].slide_id = videoSlideId;
+      }
+      const defaultVideoTitle = lang === 'ar' ? 'فيديو' : 'Video';
+      parent.appendChild(
+        createEl(doc, 'slide', {
+          slide_id: videoSlideId,
+          slide_number: '0',
+          video_id: emitVideoId,
+          slide_category: 'presentation',
+          slide_role: 'video',
+          slide_title: emitSectionTitle || defaultVideoTitle,
+        }),
+      );
+      return;
+    }
+
+    if (isVideoRow && ['video', 'فيديو'].includes(normalizedEmitTitle) && !emitVideoId) {
+      log("Row has 'Video' section_title but is missing a 'video_id'. Skipping slide creation.");
+      return;
+    }
+
+    if (isActivityRow) {
+      const activitySlideId = (await getSlideId(emitActivityId, fetchFn)) || emitActivityId;
+      const defaultActivityTitle = lang === 'ar' ? 'نشاط' : 'Activity';
+      parent.appendChild(
+        createEl(doc, 'slide', slideAttrs(
+          activitySlideId,
+          'activity',
+          emitSectionTitle || defaultActivityTitle,
+          { activity_id: emitActivityId },
+        )),
+      );
+      return;
+    }
+
+    const hasQuestion = !isBlank(emitQId);
+    let slideType;
+    if (hasQuestion) {
+      slideType = liveSlideRoleFromRow(emitRowForRole);
+      if (!slideType) {
+        throw new Error(
+          `Slide ${emitRow.slide_number}: question_id present but question_role `
+          + "must be 'example' or 'interactive_example' for live question slides.",
+        );
+      }
+    } else {
+      slideType = 'instructional';
+    }
+
+    const plan = slideGroupByIndex.get(emitIdx);
+    let slideId;
+    if (slideType === 'example' || slideType === 'interactive_example') {
+      slideId = translateQuestionId(formatQuestionId(emitQId), subject, log);
+    } else {
+      const [resolvedId, sourceId] = resolveSlideIdForSlideGroupRow(emitRow, emitIdx, plan);
+      if (resolvedId && plan && plan.part_row_indices.includes(emitIdx)) {
+        slideId = resolvedId;
+        sessionRowsProcessed[emitIdx].slide_id = resolvedId;
+        if (sourceId) sessionRowsProcessed[emitIdx].package_source_slide_id = sourceId;
+      } else {
+        slideId = await getSlideId(emitRow.slide_id, fetchFn);
+        if (String(emitRow.slide_id ?? '').trim().toLowerCase() === 'new' && slideId) {
+          sessionRowsProcessed[emitIdx].slide_id = slideId;
+        }
+      }
+    }
+
+    let slideTitleText;
+    if (slideType === 'instructional') {
+      slideTitleText = emitSectionTitle || lastSectionTitle;
+    } else if (
+      csvCellStr(emitRow.section_gp) === emitSectionTitle &&
+      csvCellStr(emitRow.section_gp) === activeGroupName &&
+      emitIdx === sectionGroups[csvCellStr(emitRow.section_gp)]
+    ) {
+      slideTitleText = csvCellStr(emitRow.section_gp);
+    } else {
+      slideTitleText = lastSectionTitle;
+    }
+
+    slideTitleText = localizeCanonicalSlideTitle(slideTitleText, lang);
+    const attrs = { ...slideAttrs(slideId, slideType, slideTitleText) };
+
+    if (hasQuestion) {
+      const formattedQId = formatQuestionId(emitQId);
+      const translatedQId = translateQuestionId(formattedQId, subject, log);
+      const qAttrs = questionAttrs(emitQId, translatedQId, missingQuestions, log);
+      attrs.slide_id = qAttrs.question_id;
+      Object.assign(attrs, qAttrs);
+      attrs.slide_title = canonicalQuestionSlideTitle(lang, slideType);
+    }
+
+    parent.appendChild(createEl(doc, 'slide', attrs));
+
+    const verbatimRaw = emitRow.verbatim;
+    if (slideId && !isBlank(verbatimRaw)) {
+      const match = /\{(.*)\}/s.exec(String(verbatimRaw));
+      if (match) {
+        const textToProcess = match[1].trim();
+        if (textToProcess) {
+          verbatimTasks.push({ slide_id: slideId, text: textToProcess });
+          log(`Found verbatim text for slide ID ${slideId}. Queued for processing.`);
+        }
+      }
+    }
+  }
 
   for (let mainIdx = 0; mainIdx < mainContent.length; mainIdx += 1) {
     const row = mainContent[mainIdx];
@@ -869,13 +1032,16 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
     if (sectionIdFromCsv && sectionIdFromCsv !== currentSectionId) {
       const sectionParent = currentSectionGroupElement || metasession;
-      const sectionTypeValue = normalizeSectionType(
+      const [sectionTypeValue, secErrs] = sectionTypeForCourseType(
+        courseType,
         row.section_type,
-        metaAttributes.metasession_type || 'regular',
       );
+      if (secErrs.length) throw new Error(secErrs.join('; '));
+      const resolvedSectionType = sectionTypeValue
+        || defaultSectionTypeForCourseType(courseType);
       currentSectionElement = createEl(doc, 'section', {
         section_id: sectionIdFromCsv,
-        section_type: sectionTypeValue,
+        section_type: resolvedSectionType,
       });
       sectionParent.appendChild(currentSectionElement);
       sectionElementsById.set(sectionIdFromCsv, currentSectionElement);
@@ -937,112 +1103,32 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
     if (!sectionTitle && isBlank(qId)) continue;
 
-    const isVideoRow =
-      isBlank(qId) &&
-      (videoIdOnRow || ['video', 'فيديو'].includes(normalizedTitle));
-    const isActivityRow = isBlank(qId) && Boolean(activityIdOnRow);
+    const slideGroupPlan = slideGroupByIndex.get(idx);
+    if (slideGroupPlan && idx !== slideGroupPlan.first_row_index) continue;
 
-    if (isVideoRow && videoIdOnRow) {
-      const videoSlideId = (await getSlideId(videoIdOnRow, fetchFn)) || videoIdOnRow;
-      if (csvCellStr(row.slide_id).toLowerCase() === 'new' && videoSlideId) {
-        sessionRowsProcessed[idx].slide_id = videoSlideId;
-      }
-      const defaultVideoTitle = lang === 'ar' ? 'فيديو' : 'Video';
-      const slideTitleText = sectionTitle || defaultVideoTitle;
-      parentForItem.appendChild(
-        createEl(doc, 'slide', {
-          slide_id: videoSlideId,
-          slide_number: '0',
-          video_id: videoIdOnRow,
-          slide_category: 'presentation',
-          slide_role: 'video',
-          slide_title: slideTitleText,
-        }),
-      );
-      continue;
-    }
-
-    if (isVideoRow && ['video', 'فيديو'].includes(normalizedTitle) && !videoIdOnRow) {
-      log("Row has 'Video' section_title but is missing a 'video_id'. Skipping slide creation.");
-      continue;
-    }
-
-    if (isActivityRow) {
-      const activitySlideId = (await getSlideId(activityIdOnRow, fetchFn)) || activityIdOnRow;
-      const defaultActivityTitle = lang === 'ar' ? 'نشاط' : 'Activity';
-      parentForItem.appendChild(
-        createEl(doc, 'slide', slideAttrs(activitySlideId, 'activity', sectionTitle || defaultActivityTitle, {
-          activity_id: activityIdOnRow,
-        })),
-      );
-      continue;
-    }
-
-    const hasQuestion = !isBlank(qId);
-    let slideType;
-    if (hasQuestion) {
-      slideType = liveSlideRoleFromRow(rowForRole);
-      if (!slideType) {
-        throw new Error(
-          `Slide ${row.slide_number}: question_id present but question_role `
-          + "must be 'example' or 'interactive_example' for live question slides.",
+    if (slideGroupPlan && idx === slideGroupPlan.first_row_index) {
+      const groupParent = createEl(doc, 'slide_group', {
+        slide_group_id: slideGroupPlan.slide_group_id,
+        pages: slideGroupPlan.pages,
+      });
+      parentForItem.appendChild(groupParent);
+      const spanRows = mainContent.filter((contentRow) => {
+        const contentIdx = sessionRowsProcessed.indexOf(contentRow);
+        const resolvedIdx = contentIdx >= 0 ? contentIdx : -1;
+        return (
+          resolvedIdx >= slideGroupPlan.first_row_index &&
+          resolvedIdx <= slideGroupPlan.last_row_index
         );
+      });
+      for (const emitRow of spanRows) {
+        const emitIdx = sessionRowsProcessed.indexOf(emitRow);
+        const emitSectionTitle = csvCellStr(emitRow.section_title) || sectionTitle;
+        await emitSlideFromContentRow(groupParent, emitIdx, emitRow, emitSectionTitle);
       }
-    } else {
-      slideType = 'instructional';
+      continue;
     }
 
-    let slideId;
-    if (slideType === 'example' || slideType === 'interactive_example') {
-      slideId = translateQuestionId(formatQuestionId(qId), subject, log);
-    } else {
-      slideId = await getSlideId(row.slide_id, fetchFn);
-      if (String(row.slide_id ?? '').trim().toLowerCase() === 'new' && slideId) {
-        sessionRowsProcessed[idx].slide_id = slideId;
-      }
-    }
-
-    let slideTitleText;
-    if (slideType === 'instructional') {
-      slideTitleText = sectionTitle || lastSectionTitle;
-    } else if (
-      sectionGp === sectionTitle &&
-      sectionGp === activeGroupName &&
-      idx === sectionGroups[sectionGp]
-    ) {
-      slideTitleText = sectionGp;
-    } else {
-      slideTitleText = lastSectionTitle;
-    }
-
-    slideTitleText = localizeCanonicalSlideTitle(slideTitleText, lang);
-
-    const attrs = {
-      ...slideAttrs(slideId, slideType, slideTitleText),
-    };
-
-    if (hasQuestion) {
-      const formattedQId = formatQuestionId(qId);
-      const translatedQId = translateQuestionId(formattedQId, subject, log);
-      const qAttrs = questionAttrs(qId, translatedQId, missingQuestions, log);
-      attrs.slide_id = qAttrs.question_id;
-      Object.assign(attrs, qAttrs);
-      attrs.slide_title = canonicalQuestionSlideTitle(lang, slideType);
-    }
-
-    parentForItem.appendChild(createEl(doc, 'slide', attrs));
-
-    const verbatimRaw = row.verbatim;
-    if (slideId && !isBlank(verbatimRaw)) {
-      const match = /\{(.*)\}/s.exec(String(verbatimRaw));
-      if (match) {
-        const textToProcess = match[1].trim();
-        if (textToProcess) {
-          verbatimTasks.push({ slide_id: slideId, text: textToProcess });
-          log(`Found verbatim text for slide ID ${slideId}. Queued for processing.`);
-        }
-      }
-    }
+    await emitSlideFromContentRow(parentForItem, idx, row, sectionTitle);
   }
 
   for (const [sectionId, sectionElement] of sectionElementsById.entries()) {
@@ -1099,14 +1185,14 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
 
   let currentExam = null;
   const examIdsToMint = postThankYouRows
-    .filter((row) => isExamMarkerRow(row) && isNewId(row.exam_id))
-    .map((row) => csvCellStr(row.exam_id));
-  const mintedExamIds = await getNewIds(examIdsToMint.length, fetchFn);
+    .filter((row) => isExamMarkerRow(row) && (!csvCellStr(row.exam_id) || isNewId(row.exam_id)))
+    .length;
+  const mintedExamIds = await getNewIds(examIdsToMint, fetchFn);
   let mintedExamIndex = 0;
   for (const row of postThankYouRows) {
     if (isExamMarkerRow(row)) {
       let examId = csvCellStr(row.exam_id);
-      if (isNewId(examId)) {
+      if (!examId || isNewId(examId)) {
         examId = mintedExamIds[mintedExamIndex] || '';
         mintedExamIndex += 1;
         if (isPlainTwelveDigitId(examId)) row.exam_id = examId;
@@ -1169,6 +1255,7 @@ const XML_ATTR_ORDER = {
     'question_id', 'number_of_parts', 'part_number', 'question_type',
   ],
   section: ['section_id', 'section_type'],
+  slide_group: ['slide_group_id', 'pages'],
   worksheet: ['worksheet_id'],
   question: ['question_id', 'number_of_parts', 'part_number', 'question_type'],
   exam: ['exam_id', 'exam_title', 'duration'],

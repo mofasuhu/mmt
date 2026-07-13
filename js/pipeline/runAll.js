@@ -16,6 +16,7 @@ import { runVideoSlide } from './videoSlide.js';
 import { runRenameSessionFolders } from './renameSessionFolders.js';
 import { cleanupOutputFolders } from '../shared/outputFolders.js';
 import { isMergedPptxBasename } from '../shared/sessionCsv.js';
+import { loadSkippingValidationsByMetasession } from '../shared/skippingValidations.js';
 
 export const PIPELINE_STEP_LABELS = {
   1: 'download_with_rename',
@@ -139,6 +140,24 @@ export async function runPipeline(ctx, startStep = 1, onStepStatus = null) {
     setStatus(step, 'failed');
     throw new Error(`${reason}\nFix the issue, then resume from step ${step}.`);
   };
+
+  if (startStep <= 4 && !ctx.config?.permissionsByMeta) {
+    if (!ctx.googleSheets) {
+      await fail(2, 'Could not load skipping_validations sheet: Google Sheets API is not available.');
+    }
+    ctx.log('Loading skipping_validations permissions sheet...');
+    const [permissionsByMeta, permissionErrors] = await loadSkippingValidationsByMetasession(ctx.googleSheets);
+    if (permissionErrors.length) {
+      await fail(2, `Could not load skipping_validations sheet: ${permissionErrors.join('; ')}`);
+    }
+    ctx = {
+      ...ctx,
+      config: {
+        ...(ctx.config || {}),
+        permissionsByMeta,
+      },
+    };
+  }
 
   // Step 1
   if (startStep <= 1) {
