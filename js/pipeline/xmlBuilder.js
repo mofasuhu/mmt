@@ -1112,16 +1112,9 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
         pages: slideGroupPlan.pages,
       });
       parentForItem.appendChild(groupParent);
-      const spanRows = mainContent.filter((contentRow) => {
-        const contentIdx = sessionRowsProcessed.indexOf(contentRow);
-        const resolvedIdx = contentIdx >= 0 ? contentIdx : -1;
-        return (
-          resolvedIdx >= slideGroupPlan.first_row_index &&
-          resolvedIdx <= slideGroupPlan.last_row_index
-        );
-      });
-      for (const emitRow of spanRows) {
-        const emitIdx = sessionRowsProcessed.indexOf(emitRow);
+      for (const emitIdx of slideGroupPlan.child_row_indices) {
+        const emitRow = sessionRowsProcessed[emitIdx];
+        if (!emitRow || !mainContent.includes(emitRow)) continue;
         const emitSectionTitle = csvCellStr(emitRow.section_title) || sectionTitle;
         await emitSlideFromContentRow(groupParent, emitIdx, emitRow, emitSectionTitle);
       }

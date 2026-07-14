@@ -236,6 +236,57 @@ function slideGroupChildIdsFromXmlText(xmlText) {
   return ids;
 }
 
+function directParentAndIndex(root, slideId) {
+  const walk = (parent) => {
+    const children = [...parent.children];
+    for (let idx = 0; idx < children.length; idx += 1) {
+      const child = children[idx];
+      if (child.tagName === 'slide' && csvCellStr(child.getAttribute('slide_id')) === slideId) {
+        return [parent, idx];
+      }
+      const nested = walk(child);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  return walk(root);
+}
+
+function wrapMultipartRunInXmlText(xmlText, { groupId, partChildIds }) {
+  if (!xmlText || !partChildIds.length) return [xmlText, false];
+  const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+  if (doc.querySelector('parsererror')) return [xmlText, false];
+  const root = doc.documentElement;
+  const positions = [];
+  for (const childId of partChildIds) {
+    const found = directParentAndIndex(root, childId);
+    if (!found) return [xmlText, false];
+    positions.push(found);
+  }
+  const [parent] = positions[0];
+  if (!positions.every(([candidate]) => candidate === parent)) return [xmlText, false];
+  const indices = positions.map(([, idx]) => idx).sort((a, b) => a - b);
+  const firstIdx = indices[0];
+  const lastIdx = indices[indices.length - 1];
+  const children = [...parent.children];
+  const spanChildren = children.slice(firstIdx, lastIdx + 1);
+  if (!spanChildren.length || spanChildren.some((child) => child.tagName !== 'slide')) {
+    return [xmlText, false];
+  }
+
+  const group = doc.createElement('slide_group');
+  group.setAttribute('slide_group_id', groupId);
+  group.setAttribute(
+    'pages',
+    spanChildren.length > partChildIds.length || partChildIds.length >= 4 ? 'multiple' : 'single',
+  );
+  parent.insertBefore(group, spanChildren[0]);
+  for (const child of spanChildren) {
+    group.appendChild(child);
+  }
+  return [new XMLSerializer().serializeToString(doc), true];
+}
+
 function multipartRunsByVerbatimNumber(rows, groupedSlideIds = new Set()) {
   const runs = [];
   let currentRun = [];
@@ -493,24 +544,51 @@ async function processSession(ctx, sessionFolder, csvPath) {
     }
   }
 
+  const multipartWraps = [];
   for (const run of multipartRuns) {
     if (run.every((entry) => entry[4])) {
       continue;
     }
-    const baseId = await fetchNew12DigitId(ctx);
-    if (!baseId || !/^\d{12}$/.test(baseId)) {
+    const groupId = await fetchNew12DigitId(ctx);
+    const childIds = [];
+    for (let i = 0; i < run.length; i += 1) {
+      childIds.push(await fetchNew12DigitId(ctx));
+    }
+    if (
+      !groupId
+      || !/^\d{12}$/.test(groupId)
+      || childIds.some((childId) => !childId || !/^\d{12}$/.test(childId))
+    ) {
       log('⚠ verbatim_multipart: could not get valid 12-digit ID, skipping run');
       continue;
     }
     /** @type {Record<string, string>} */
     const runOldToNew = {};
-    run.forEach(([oldId, _text, partNumber]) => {
+    run.forEach(([oldId], index) => {
       const currentName = resolveCurrentName(oldId, oldToNew);
-      const newId = `${baseId}.${partNumber}`;
-      runOldToNew[currentName] = newId;
-      oldToNew[oldId] = newId;
+      const childId = childIds[index];
+      runOldToNew[currentName] = childId;
+      oldToNew[oldId] = childId;
     });
     await applyRenames(ctx, sessionFolder, runOldToNew, metasessionStem);
+    multipartWraps.push({ groupId, partChildIds: childIds });
+  }
+
+  const mainXml = `${sessionFolder}/${metasessionStem}.xml`;
+  if (multipartWraps.length && await vfs.isFile(mainXml)) {
+    let xmlText = await vfs.readText(mainXml);
+    let changed = false;
+    for (const wrapSpec of multipartWraps) {
+      const [nextXmlText, didWrap] = wrapMultipartRunInXmlText(xmlText, wrapSpec);
+      xmlText = nextXmlText;
+      if (didWrap) {
+        changed = true;
+        log(`✓ Wrapped verbatim_multipart slide_group ${wrapSpec.groupId}`);
+      }
+    }
+    if (changed) {
+      await vfs.writeText(mainXml, xmlText);
+    }
   }
 
   let updated = 0;

@@ -340,6 +340,12 @@ export function isVerbatimMultipartInstructionalPartRow(row) {
   return parseVerbatimNumber(row.verbatim_number) !== null;
 }
 
+export function isSlideGroupSpanChildRow(row) {
+  if (csvCellStr(row.question_id)) return false;
+  if (isWorksheetQuestionRow(row)) return false;
+  return Boolean(csvCellStr(row.slide_id));
+}
+
 /**
  * @typedef {object} SlideGroupPlan
  * @property {string} section_id
@@ -347,6 +353,7 @@ export function isVerbatimMultipartInstructionalPartRow(row) {
  * @property {number} first_row_index
  * @property {number} last_row_index
  * @property {number[]} part_row_indices
+ * @property {number[]} child_row_indices
  * @property {'single'|'multiple'} pages
  * @property {string} slide_group_id
  * @property {Record<string, string>} part_id_map
@@ -375,7 +382,10 @@ export function planInstructionalSlideGroups(sectionRows, { sectionId = '', sect
     const firstIdx = partIndices[0];
     const lastIdx = partIndices[partIndices.length - 1];
     const partCount = partIndices.length;
-    const hasInterrupt = (lastIdx - firstIdx + 1) > partCount;
+    const childIndices = sectionRows
+      .filter(([idx, row]) => idx >= firstIdx && idx <= lastIdx && isSlideGroupSpanChildRow(row))
+      .map(([idx]) => idx);
+    const hasInterrupt = childIndices.length > partCount;
     const pages = (hasInterrupt || partCount >= 4 || isStorySectionTitle(sectionTitle))
       ? 'multiple'
       : 'single';
@@ -385,6 +395,7 @@ export function planInstructionalSlideGroups(sectionRows, { sectionId = '', sect
       first_row_index: firstIdx,
       last_row_index: lastIdx,
       part_row_indices: partIndices,
+      child_row_indices: childIndices,
       pages,
       slide_group_id: '',
       part_id_map: {},
@@ -404,7 +415,10 @@ export function planInstructionalSlideGroups(sectionRows, { sectionId = '', sect
       const firstIdx = partIndices[0];
       const lastIdx = partIndices[partIndices.length - 1];
       const partCount = partIndices.length;
-      const hasInterrupt = (lastIdx - firstIdx + 1) > partCount;
+      const childIndices = sectionRows
+        .filter(([idx, row]) => idx >= firstIdx && idx <= lastIdx && isSlideGroupSpanChildRow(row))
+        .map(([idx]) => idx);
+      const hasInterrupt = childIndices.length > partCount;
       const firstSlideId = csvCellStr(currentRun[0]?.[1]?.slide_id);
       plans.push({
         section_id: sectionId,
@@ -412,6 +426,7 @@ export function planInstructionalSlideGroups(sectionRows, { sectionId = '', sect
         first_row_index: firstIdx,
         last_row_index: lastIdx,
         part_row_indices: partIndices,
+        child_row_indices: childIndices,
         pages: (hasInterrupt || partCount >= 4 || isStorySectionTitle(sectionTitle))
           ? 'multiple'
           : 'single',
@@ -483,10 +498,8 @@ export function collectInstructionalSlideGroupPlansFromIndexedRows(indexedRows) 
       sectionTitle,
     })) {
       plans.push(plan);
-      for (const [rowIdx] of sectionRows) {
-        if (rowIdx >= plan.first_row_index && rowIdx <= plan.last_row_index) {
-          indexToPlan.set(rowIdx, plan);
-        }
+      for (const rowIdx of plan.child_row_indices) {
+        indexToPlan.set(rowIdx, plan);
       }
     }
     sectionRows = [];
