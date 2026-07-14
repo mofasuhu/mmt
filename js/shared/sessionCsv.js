@@ -1430,6 +1430,9 @@ export const WORKSHEET_COUNT_BOUNDS = {
   4: [10, 15],
 };
 
+export const REGULAR_SECTION_MIN_EXAMPLE_SLIDES = 2;
+export const REGULAR_SECTION_MIN_INTERACTIVE_EXAMPLE_SLIDES = 2;
+
 export class PermissionContext {
   constructor() {
     this.sessionTags = new Set();
@@ -1637,19 +1640,22 @@ export function validateRegularSectionLiveRoles(regularSections, rows, permissio
   const perms = permissions || new PermissionContext();
   for (const sid of Object.keys(regularSections)) {
     if (perms.hasSectionPermission(sid, 'questionless_section')) continue;
-    let hasExample = false;
-    let hasInteractive = false;
+    let exampleCount = 0;
+    let interactiveCount = 0;
     for (const row of rows) {
       if (csvCellStr(row.section_id) !== sid) continue;
       const role = liveSlideRoleFromRow(row);
-      if (role === 'example') hasExample = true;
-      else if (role === 'interactive_example') hasInteractive = true;
+      if (role === 'example') exampleCount += 1;
+      else if (role === 'interactive_example') interactiveCount += 1;
     }
-    if (!hasExample && !perms.hasSectionPermission(sid, 'no_examples')) {
-      errors.push(`section ${sid}: missing at least one example question slide.`);
+    if (exampleCount < REGULAR_SECTION_MIN_EXAMPLE_SLIDES && !perms.hasSectionPermission(sid, 'no_examples')) {
+      errors.push(`section ${sid}: missing at least two example question slides.`);
     }
-    if (!hasInteractive && !perms.hasSectionPermission(sid, 'no_interactive_examples')) {
-      errors.push(`section ${sid}: missing at least one interactive_example question slide.`);
+    if (
+      interactiveCount < REGULAR_SECTION_MIN_INTERACTIVE_EXAMPLE_SLIDES
+      && !perms.hasSectionPermission(sid, 'no_interactive_examples')
+    ) {
+      errors.push(`section ${sid}: missing at least two interactive_example question slides.`);
     }
   }
   return errors;
@@ -1771,19 +1777,22 @@ export function validateRegularSectionLiveRolesXml(regularSections, root, permis
     const sid = csvCellStr(section.getAttribute('section_id'));
     if (!(sid in regularSections)) continue;
     if (perms.hasSectionPermission(sid, 'questionless_section')) continue;
-    let hasExample = false;
-    let hasInteractive = false;
+    let exampleCount = 0;
+    let interactiveCount = 0;
     for (const slide of [...section.querySelectorAll('slide')]) {
       if (slide.getAttribute('slide_category') !== 'question') continue;
       const role = csvCellStr(slide.getAttribute('slide_role')).toLowerCase().replace(/ /g, '_');
-      if (role === 'example') hasExample = true;
-      else if (role === 'interactive_example') hasInteractive = true;
+      if (role === 'example') exampleCount += 1;
+      else if (role === 'interactive_example') interactiveCount += 1;
     }
-    if (!hasExample && !perms.hasSectionPermission(sid, 'no_examples')) {
-      errors.push(`section ${sid}: missing at least one example question slide.`);
+    if (exampleCount < REGULAR_SECTION_MIN_EXAMPLE_SLIDES && !perms.hasSectionPermission(sid, 'no_examples')) {
+      errors.push(`section ${sid}: missing at least two example question slides.`);
     }
-    if (!hasInteractive && !perms.hasSectionPermission(sid, 'no_interactive_examples')) {
-      errors.push(`section ${sid}: missing at least one interactive_example question slide.`);
+    if (
+      interactiveCount < REGULAR_SECTION_MIN_INTERACTIVE_EXAMPLE_SLIDES
+      && !perms.hasSectionPermission(sid, 'no_interactive_examples')
+    ) {
+      errors.push(`section ${sid}: missing at least two interactive_example question slides.`);
     }
   }
   return errors;
