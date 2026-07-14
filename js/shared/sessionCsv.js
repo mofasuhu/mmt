@@ -1656,7 +1656,7 @@ export function validateRegularSectionLiveRoles(regularSections, rows, permissio
 }
 
 export function isRule40Exempt(grade, subject) {
-  const g = Number.parseInt(csvCellStr(grade), 10);
+  const g = Number.parseInt(normalizeGradeForXml(grade), 10);
   if ([10, 11, 12].includes(g)) return true;
   return ICT_SUBJECTS_RULE40_EXEMPT.has(csvCellStr(subject).toLowerCase());
 }
