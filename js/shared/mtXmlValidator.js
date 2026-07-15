@@ -11,7 +11,7 @@ import {
   validateSectionsForXmlMetasessionType,
   validateSeasonFromApi,
 } from './sessionCsv.js';
-import { QMS_QUESTION_METADATA_URL } from './constants.js';
+import { QMS_QUESTION_METADATA_URL, SUBJECTS_REQUIRING_TRANSLATION } from './constants.js';
 import { getRawMetasessionData } from './metasessionApi.js';
 import { loadSkippingValidationsByMetasession } from './skippingValidations.js';
 
@@ -122,6 +122,10 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
   }
   const metasessionType = csvCellStr(root.getAttribute('metasession_type'));
   errors.push(...validateXmlMetasessionTypeSupported(metasessionType));
+
+  // Detect if this session uses translated questions (Arabic Science subjects)
+  const sessionSubject = csvCellStr(root.getAttribute('subject'));
+  const requiresTranslation = SUBJECTS_REQUIRING_TRANSLATION.has(sessionSubject);
 
   let resolvedApiData = apiData;
   if (!resolvedApiData && validateApi) {
@@ -265,20 +269,49 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
       const elem = occurrence.element;
       const apiParts = Number.parseInt(meta.number_of_parts ?? 1, 10) || 1;
       if (csvCellStr(elem.getAttribute('number_of_parts')) !== String(apiParts)) {
-        errors.push(`${occurrence.kind} question '${occurrence.qid}': number_of_parts must be ${apiParts}.`);
+        if (requiresTranslation) {
+          errors.push(
+            `${occurrence.kind} question '${occurrence.qid}': ` +
+            `number_of_parts must be ${apiParts} ` +
+            `(parent question metadata vs translated question API).`
+          );
+        } else {
+          errors.push(
+            `${occurrence.kind} question '${occurrence.qid}': ` +
+            `number_of_parts must be ${apiParts}.`
+          );
+        }
       }
       const types = meta.type;
       const part = occurrence.partNumber;
       if (!Array.isArray(types) || part < 1 || part > types.length) {
-        errors.push(`Question ${occurrence.baseId}: API type array missing part ${part}.`);
+        let msg = `Question ${occurrence.baseId}: API type array missing part ${part}.`;
+        if (requiresTranslation) msg += ' (translated question)';
+        errors.push(msg);
       } else if (!areQuestionTypesCompatible(elem.getAttribute('question_type') || '', String(types[part - 1]))) {
-        errors.push(`${occurrence.kind} question '${occurrence.qid}': question_type '${elem.getAttribute('question_type')}' does not match API type '${types[part - 1]}'.`);
+        if (requiresTranslation) {
+          errors.push(
+            `${occurrence.kind} question '${occurrence.qid}': ` +
+            `question_type '${elem.getAttribute('question_type')}' (from parent question) ` +
+            `does not match translated question API type '${types[part - 1]}'.`
+          );
+        } else {
+          errors.push(
+            `${occurrence.kind} question '${occurrence.qid}': ` +
+            `question_type '${elem.getAttribute('question_type')}' ` +
+            `does not match API type '${types[part - 1]}'.`
+          );
+        }
       }
       for (const key of ['language', 'country', 'grade', 'subject']) {
         const apiVal = metaValue(meta, key);
         const xmlVal = csvCellStr(root.getAttribute(key));
         if (apiVal && xmlVal && apiVal.toLowerCase() !== xmlVal.toLowerCase()) {
-          errors.push(`Question ${occurrence.baseId}: API ${key} '${apiVal}' does not match XML '${xmlVal}'.`);
+          let msg = `Question ${occurrence.baseId}: API ${key} '${apiVal}' does not match XML '${xmlVal}'.`;
+          if (requiresTranslation && ['language', 'country'].includes(key)) {
+            msg += ' (parent vs translated question)';
+          }
+          errors.push(msg);
         }
       }
     }
