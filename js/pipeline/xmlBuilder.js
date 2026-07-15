@@ -38,6 +38,8 @@ import {
   collectInstructionalSlideGroupPlansForMainContent,
   applySlideGroupMintedIds,
   resolveSlideIdForSlideGroupRow,
+  sessionDurationFromCsvRows,
+  normalizeExamDuration,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -460,7 +462,12 @@ export async function validateSessionCsv(
     try {
       const { document: xmlDoc } = await buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn);
       const permissions = permissionsForMetasession(permissionsByMeta, metasessionId);
-      const xmlValidation = await validateMtXmlDocument(xmlDoc, { apiData, fetchFn, permissions });
+      const xmlValidation = await validateMtXmlDocument(xmlDoc, {
+        apiData,
+        fetchFn,
+        permissions,
+        sessionDurationFallback: sessionDurationFromCsvRows(sessionRows),
+      });
       xmlOutputErrors = xmlValidation.errors;
       xmlOutputWarnings = xmlValidation.warnings;
       const lang = requireLanguageFromReportRow(detailsRow);
@@ -1194,7 +1201,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
       currentExam = createEl(doc, 'exam', {
         exam_id: examId,
         exam_title: csvCellStr(row.exam_title),
-        duration: csvCellStr(row.duration),
+        duration: normalizeExamDuration(row.duration),
       });
       metasession.appendChild(currentExam);
       continue;

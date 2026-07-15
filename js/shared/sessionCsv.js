@@ -123,6 +123,17 @@ export const VALID_QUESTION_ROLES = new Set([
 export const LIVE_QUESTION_ROLES = new Set(['example', 'interactive_example']);
 export const WORKSHEET_QUESTION_ROLES = new Set(['checkpoint', 'practice']);
 export const EXAM_QUESTION_ROLE = 'exam';
+/** Rule 40/60 counts live example/interactive_example + worksheet practice only (excludes exam). */
+export const RULE40_LIVE_ROLES = new Set(['example', 'interactive_example']);
+export const RULE40_WORKSHEET_ROLES = new Set(['practice']);
+export const SLIDE_DURATION_EXCLUDED_ROLES = new Set(['title', 'toc', 'thank_you']);
+export const SESSION_DURATION_MISSING_MSG = (
+  'Session duration is missing from the Metasession API response. '
+  + "As a temporary workaround, please add 'session_duration: <duration>' "
+  + '(in minutes) to the first slide of the PPTX, then rerun. '
+  + 'Note: This is a temporary fallback until the technology unit adds the '
+  + 'duration field to the Metasession API response.'
+);
 
 const CANONICAL_QUESTION_SLIDE_TITLES = {
   question: {
@@ -1319,6 +1330,18 @@ export function extractBareQuestionIdLines(text) {
 }
 
 /**
+ * Return the numeric minutes portion of an exam duration (e.g. `30 minutes` -> `30`).
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function normalizeExamDuration(value) {
+  const text = csvCellStr(value);
+  if (!text) return '';
+  const match = text.match(/\d+/);
+  return match ? match[0] : text;
+}
+
+/**
  * @param {Record<string, string>} slide
  * @param {{ context?: string }} [opts]
  * @returns {[string, string[]]}
@@ -1335,13 +1358,18 @@ export function resolveExamMarkerDuration(slide, { context = '' } = {}) {
     errors.push(`${prefix}exam marker must include duration, ar_duration, or en_duration.`);
     return ['', errors];
   }
-  const uniqueVals = new Set(values.map(([, val]) => val));
+  const normalized = values.map(([key, val]) => [key, normalizeExamDuration(val)]);
+  const uniqueVals = new Set(normalized.map(([, val]) => val).filter(Boolean));
   if (uniqueVals.size > 1) {
     const detail = values.map(([key, val]) => `${key}='${val}'`).join(', ');
     errors.push(`${prefix}conflicting exam marker durations (${detail}).`);
     return ['', errors];
   }
-  return [values[0][1], errors];
+  if (!uniqueVals.size) {
+    errors.push(`${prefix}exam marker duration must include a numeric minutes value.`);
+    return ['', errors];
+  }
+  return [[...uniqueVals][0], errors];
 }
 
 /**
@@ -1362,9 +1390,6 @@ export function resolveBilingualExamMarkerFields(slide, { context = '' } = {}) {
     );
   }
 
-  const duration = csvCellStr(slide.duration);
-  const arDur = csvCellStr(slide.ar_duration);
-  const enDur = csvCellStr(slide.en_duration);
   const [resolvedDuration, durErrors] = resolveExamMarkerDuration(slide, { context });
   errors.push(...durErrors);
 
@@ -1378,8 +1403,8 @@ export function resolveBilingualExamMarkerFields(slide, { context = '' } = {}) {
     ar_exam_title: arTitle || examTitle,
     en_exam_title: enTitle || examTitle,
     duration: resolvedDuration,
-    ar_duration: arDur || duration,
-    en_duration: enDur || duration,
+    ar_duration: resolvedDuration,
+    en_duration: resolvedDuration,
     exam_id: examId,
     ar_exam_id: csvCellStr(slide.ar_exam_id) || examId,
     en_exam_id: csvCellStr(slide.en_exam_id) || examId,
@@ -1589,6 +1614,46 @@ export function validateRegularSectionCount(xmlMetasessionType, regularSections)
   return [];
 }
 
+/**
+ * @param {Record<string, string>[]} rows
+ * @param {string} courseType
+ * @returns {[Record<string, string>, string[]]}
+ */
+export function collectAllSectionsFromRows(rows, courseType) {
+  const typesBySection = {};
+  const errors = [];
+  for (const row of rows) {
+    if (isStructuralSessionRow(row)) continue;
+    const sid = csvCellStr(row.section_id);
+    if (!isSectionId(sid) || typesBySection[sid]) continue;
+    const [resolved, rowErrors] = sectionTypeForCourseType(courseType, row.section_type);
+    const sn = csvCellStr(row.slide_number) || '?';
+    for (const err of rowErrors) errors.push(`Slide ${sn}: ${err}`);
+    if (resolved) typesBySection[sid] = resolved;
+  }
+  return [typesBySection, errors];
+}
+
+/** @returns {Record<string, string>} */
+export function collectAllSectionsFromXml(root) {
+  const sections = {};
+  for (const section of [...root.querySelectorAll('section')]) {
+    const sid = csvCellStr(section.getAttribute('section_id'));
+    const stype = csvCellStr(section.getAttribute('section_type')).toLowerCase();
+    if (sid) sections[sid] = stype || 'unknown';
+  }
+  return sections;
+}
+
+/** @returns {string[]} */
+export function validateTotalSectionCount(sections) {
+  const count = Object.keys(sections || {}).length;
+  if (count < 1 || count > 4) {
+    return [`Session must have between 1 and 4 sections; found ${count}.`];
+  }
+  return [];
+}
+
 export function countWorksheetQuestionsForSectionRows(rows, sectionId) {
   let count = 0;
   for (const row of rows) {
@@ -1667,10 +1732,18 @@ export function isRule40Exempt(grade, subject) {
   return ICT_SUBJECTS_RULE40_EXEMPT.has(csvCellStr(subject).toLowerCase());
 }
 
+function rule40BucketForRole(role) {
+  let normalized = normalizeQuestionRole(role);
+  if (normalized === 'interactive') normalized = 'interactive_example';
+  if (RULE40_LIVE_ROLES.has(normalized)) return 'live';
+  if (RULE40_WORKSHEET_ROLES.has(normalized)) return 'worksheet';
+  return null;
+}
+
 /**
  * @param {string} xmlMetasessionType
  * @param {Record<string, string>[]} rows
- * @param {Map<string, object>} metadataById
+ * @param {Map<string, object>|Record<string, object>} metadataById
  * @param {{ grade?: string, subject?: string, permissions?: PermissionContext | null }} [opts]
  * @returns {string[]}
  */
@@ -1685,22 +1758,51 @@ export function validateRule40_60Mcq(
   if (perms.hasSessionPermission('mcq_free_percentage')) return [];
   if (isRule40Exempt(grade, subject)) return [];
 
-  let total = 0;
-  let mcq = 0;
+  let liveTotal = 0;
+  let liveMcq = 0;
+  let worksheetTotal = 0;
+  let worksheetMcq = 0;
   for (const row of rows) {
     const qid = csvCellStr(row.question_id);
     if (!qid || !isTwelveDigitId(qid)) continue;
+    const bucket = rule40BucketForRole(row.question_role);
+    if (!bucket) continue;
     const qType = questionTypeFromMetadata(qid, metadataById);
     if (!qType) continue;
-    total += 1;
-    if (qType === 'mcq') mcq += 1;
+    if (bucket === 'live') {
+      liveTotal += 1;
+      if (qType === 'mcq') liveMcq += 1;
+    } else {
+      worksheetTotal += 1;
+      if (qType === 'mcq') worksheetMcq += 1;
+    }
   }
-  if (total === 0) return [];
-  if (mcq / total > 0.6) {
+
+  const errors = [];
+  const total = liveTotal + worksheetTotal;
+  const mcq = liveMcq + worksheetMcq;
+  if (total > 0 && mcq / total >= 0.6) {
     const pct = Math.round((100 * mcq) / total * 10) / 10;
-    return [`MCQ share is ${pct}% (${mcq}/${total}); must be at most 60%.`];
+    const nonMcq = total - mcq;
+    const nonPct = Math.round((100 * nonMcq) / total * 10) / 10;
+    errors.push(
+      `MCQ share is ${pct}% (${mcq}/${total}); must be less than 60% `
+      + `(non-MCQ must be at least 40%; currently ${nonPct}%).`,
+    );
   }
-  return [];
+  if (liveTotal > 0 && liveMcq === liveTotal) {
+    errors.push(
+      `Live question slides have 0% non-MCQ (${liveMcq}/${liveTotal} MCQ); `
+      + 'at least one non-MCQ live question is required.',
+    );
+  }
+  if (worksheetTotal > 0 && worksheetMcq === worksheetTotal) {
+    errors.push(
+      `Worksheet questions have 0% non-MCQ (${worksheetMcq}/${worksheetTotal} MCQ); `
+      + 'at least one non-MCQ practice question is required.',
+    );
+  }
+  return errors;
 }
 
 export function validateRevisionExamPresence(xmlMetasessionType, rows) {
@@ -1801,25 +1903,194 @@ export function validateRegularSectionLiveRolesXml(regularSections, root, permis
 function xmlQuestionRowsForRule40(root) {
   const rows = [];
   for (const slide of [...root.querySelectorAll('slide')]) {
-    if (slide.getAttribute('slide_category') === 'question') {
-      const qid = csvCellStr(slide.getAttribute('question_id'));
-      if (qid) rows.push({ question_id: qid });
+    if (slide.getAttribute('slide_category') !== 'question') continue;
+    const qid = csvCellStr(slide.getAttribute('question_id'));
+    if (!qid) continue;
+    let role = csvCellStr(slide.getAttribute('slide_role')).toLowerCase().replace(/ /g, '_');
+    if (role === 'interactive') role = 'interactive_example';
+    if (RULE40_LIVE_ROLES.has(role)) {
+      rows.push({ question_id: qid, question_role: role });
     }
   }
   for (const question of [...root.querySelectorAll('worksheet > question')]) {
     const qid = csvCellStr(question.getAttribute('question_id'));
-    if (qid) rows.push({ question_id: qid });
-  }
-  for (const question of [...root.querySelectorAll('exam > question')]) {
-    const qid = csvCellStr(question.getAttribute('question_id'));
-    if (qid) rows.push({ question_id: qid });
+    if (qid) rows.push({ question_id: qid, question_role: 'practice' });
   }
   return rows;
 }
 
+/** @returns {string[]} */
+export function validateQuestionIdUniqueness(rows) {
+  /** @type {Record<string, string[]>} */
+  const locations = {};
+  rows.forEach((row, i) => {
+    const qid = csvCellStr(row.question_id);
+    if (!qid || !isTwelveDigitId(qid)) return;
+    const sn = csvCellStr(row.slide_number) || String(i + 1);
+    if (!locations[qid]) locations[qid] = [];
+    locations[qid].push(sn);
+  });
+  const errors = [];
+  for (const qid of Object.keys(locations).sort()) {
+    if (locations[qid].length > 1) {
+      errors.push(`Duplicate question_id '${qid}' found on slides: ${locations[qid].join(', ')}.`);
+    }
+  }
+  return errors;
+}
+
+/** @returns {string[]} */
+export function validateQuestionIdUniquenessFromXml(root) {
+  /** @type {Record<string, string[]>} */
+  const locations = {};
+  const add = (qid, label) => {
+    if (qid && isTwelveDigitId(qid)) {
+      if (!locations[qid]) locations[qid] = [];
+      locations[qid].push(label);
+    }
+  };
+  for (const slide of [...root.querySelectorAll('slide')]) {
+    if (slide.getAttribute('slide_category') !== 'question') continue;
+    const qid = csvCellStr(slide.getAttribute('question_id'));
+    const sn = csvCellStr(slide.getAttribute('slide_number')) || '?';
+    add(qid, `live slide ${sn}`);
+  }
+  for (const question of [...root.querySelectorAll('worksheet > question')]) {
+    add(csvCellStr(question.getAttribute('question_id')), 'worksheet');
+  }
+  for (const question of [...root.querySelectorAll('exam > question')]) {
+    add(csvCellStr(question.getAttribute('question_id')), 'exam');
+  }
+  const errors = [];
+  for (const qid of Object.keys(locations).sort()) {
+    if (locations[qid].length > 1) {
+      errors.push(`Duplicate question_id '${qid}' found at: ${locations[qid].join(', ')}.`);
+    }
+  }
+  return errors;
+}
+
+export function sessionDurationFromApiData(apiData) {
+  if (!apiData) return null;
+  const raw = apiData.duration;
+  if (raw == null || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+export function sessionDurationFromCsvRows(rows) {
+  if (!rows) return null;
+  for (const row of rows) {
+    const raw = csvCellStr(row.session_duration);
+    if (!raw) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * @returns {[number|null, string[]]}
+ */
+export function resolveSessionDurationMinutes({
+  apiData = null,
+  rows = null,
+  sessionDurationFallback = null,
+} = {}) {
+  const apiDuration = sessionDurationFromApiData(apiData);
+  if (apiDuration != null) return [apiDuration, []];
+  const csvDuration = sessionDurationFromCsvRows(rows);
+  if (csvDuration != null) return [csvDuration, []];
+  if (sessionDurationFallback != null && String(sessionDurationFallback).trim()) {
+    const value = Number(sessionDurationFallback);
+    if (Number.isFinite(value) && value > 0) return [value, []];
+  }
+  return [null, [SESSION_DURATION_MISSING_MSG]];
+}
+
+export function countSlidesForDurationFromXml(root) {
+  let count = 0;
+  for (const slide of [...root.querySelectorAll('slide')]) {
+    const role = csvCellStr(slide.getAttribute('slide_role')).toLowerCase().replace(/ /g, '_');
+    if (SLIDE_DURATION_EXCLUDED_ROLES.has(role)) continue;
+    const title = csvCellStr(slide.getAttribute('slide_title'));
+    if (title === 'Well Done!' || isWellDoneTitle(title)) continue;
+    count += 1;
+  }
+  return count;
+}
+
+export function countSlidesForDurationFromRows(rows) {
+  let count = 0;
+  for (const row of rows) {
+    if (!csvCellStr(row.slide_id)) continue;
+    const sn = csvCellStr(row.slide_number);
+    if (sn === '1' || sn === '2') continue;
+    const sectionTitle = csvCellStr(row.section_title);
+    const slideTitle = csvCellStr(row.slide_title);
+    if (isThankYouTitle(sectionTitle) || isThankYouTitle(slideTitle)) continue;
+    if (
+      slideTitle === 'Well Done!'
+      || isWellDoneTitle(slideTitle)
+      || isWellDoneTitle(sectionTitle)
+    ) continue;
+    count += 1;
+  }
+  return count;
+}
+
+export function validateSlideDuration({
+  durationMinutes = null,
+  slideCount = 0,
+  missingErrors = null,
+} = {}) {
+  const errors = [...(missingErrors || [])];
+  if (durationMinutes == null) return errors;
+  if (slideCount <= 0) {
+    errors.push(
+      'Cannot compute slide_duration: no countable content slides found '
+      + '(excluding title, toc, thank_you, and Well Done!).',
+    );
+    return errors;
+  }
+  const slideDuration = durationMinutes / slideCount;
+  if (slideDuration < 1) {
+    errors.push(
+      `slide_duration is ${slideDuration.toFixed(2)} minutes `
+      + `(${durationMinutes} / ${slideCount} slides); must be at least 1 minute.`,
+    );
+  }
+  return errors;
+}
+
+export function validateSlideDurationFromRows(rows, { apiData = null } = {}) {
+  const [duration, missing] = resolveSessionDurationMinutes({ apiData, rows });
+  return validateSlideDuration({
+    durationMinutes: duration,
+    slideCount: countSlidesForDurationFromRows(rows),
+    missingErrors: missing,
+  });
+}
+
+export function validateSlideDurationFromXml(root, {
+  apiData = null,
+  sessionDurationFallback = null,
+} = {}) {
+  const [duration, missing] = resolveSessionDurationMinutes({
+    apiData,
+    sessionDurationFallback,
+  });
+  return validateSlideDuration({
+    durationMinutes: duration,
+    slideCount: countSlidesForDurationFromXml(root),
+    missingErrors: missing,
+  });
+}
+
 /**
  * @param {Element} root
- * @param {{ xmlMetasessionType: string, metadataById?: Map<string, object> | null, grade?: string, subject?: string, permissions?: PermissionContext | null }} opts
+ * @param {{ xmlMetasessionType: string, metadataById?: Map<string, object> | null, grade?: string, subject?: string, permissions?: PermissionContext | null, apiData?: object | null, sessionDurationFallback?: string|number|null }} opts
  * @returns {string[]}
  */
 export function validateSessionContentRulesFromXml(
@@ -1830,10 +2101,14 @@ export function validateSessionContentRulesFromXml(
     grade = '',
     subject = '',
     permissions = null,
+    apiData = null,
+    sessionDurationFallback = null,
   },
 ) {
   const regularSections = collectRegularSectionsFromXml(root);
-  const errors = validateRegularSectionCount(xmlMetasessionType, regularSections);
+  const allSections = collectAllSectionsFromXml(root);
+  const errors = validateTotalSectionCount(allSections);
+  errors.push(...validateQuestionIdUniquenessFromXml(root));
   errors.push(...validateRegularSectionWorksheetCountsXml(regularSections, root, permissions));
   errors.push(...validateRegularSectionLiveRolesXml(regularSections, root, permissions));
   if (metadataById) {
@@ -1844,12 +2119,16 @@ export function validateSessionContentRulesFromXml(
       { grade, subject, permissions },
     ));
   }
+  errors.push(...validateSlideDurationFromXml(root, {
+    apiData,
+    sessionDurationFallback,
+  }));
   return errors;
 }
 
 /**
  * @param {Record<string, string>[]} rows
- * @param {{ courseType: string, xmlMetasessionType: string, metadataById?: Map<string, object> | null, grade?: string, subject?: string, permissions?: PermissionContext | null }} opts
+ * @param {{ courseType: string, xmlMetasessionType: string, metadataById?: Map<string, object> | null, grade?: string, subject?: string, permissions?: PermissionContext | null, apiData?: object | null }} opts
  * @returns {string[]}
  */
 export function validateSessionContentRules(
@@ -1861,12 +2140,15 @@ export function validateSessionContentRules(
     grade = '',
     subject = '',
     permissions = null,
+    apiData = null,
   },
 ) {
   const [regularSections, typeErrors] = collectRegularSectionsFromRows(rows, courseType);
-  const errors = [...typeErrors];
+  const [allSections, allTypeErrors] = collectAllSectionsFromRows(rows, courseType);
+  const errors = [...typeErrors, ...allTypeErrors];
   errors.push(...validateRevisionExamPresence(xmlMetasessionType, rows));
-  errors.push(...validateRegularSectionCount(xmlMetasessionType, regularSections));
+  errors.push(...validateTotalSectionCount(allSections));
+  errors.push(...validateQuestionIdUniqueness(rows));
   errors.push(...validateRegularSectionWorksheetCounts(regularSections, rows, permissions));
   errors.push(...validateRegularSectionLiveRoles(regularSections, rows, permissions));
   if (metadataById) {
@@ -1877,6 +2159,7 @@ export function validateSessionContentRules(
       { grade, subject, permissions },
     ));
   }
+  errors.push(...validateSlideDurationFromRows(rows, { apiData }));
   return errors;
 }
 
@@ -2009,6 +2292,46 @@ export function allowedPptxMtypesForXmlMetasessionType(xmlMetasessionType, cours
   return new Set();
 }
 
+/** Allowed PPTX filename <mtype> tokens matched directly against API course_type. */
+export function allowedPptxMtypesForCourseType(courseType) {
+  const courseKey = courseTypeKey(courseType);
+  if (courseKey === 'full curriculum') {
+    return new Set(['full curriculum', 'full_curriculum', 'regular']);
+  }
+  if (courseKey === 'final revision') {
+    return new Set(['final revision', 'final_revision', 'revision']);
+  }
+  if (courseKey === 'foundation') return new Set(['foundation']);
+  return new Set();
+}
+
+export function normalizePptxMtypeToken(value) {
+  return csvCellStr(value).toLowerCase();
+}
+
+/** Match PPTX filename <mtype> directly to Metasession API course_type. */
+export function validatePptxMtypeAgainstCourseType(courseType, mtype) {
+  const courseKey = courseTypeKey(courseType);
+  if (!courseKey) {
+    return [`type '${mtype}': could not resolve course_type from API.`];
+  }
+  const allowed = allowedPptxMtypesForCourseType(courseType);
+  if (!allowed.size) {
+    return [
+      `type '${mtype}': unsupported course_type '${courseType}' for PPTX filename matching.`,
+    ];
+  }
+  const fileType = normalizePptxMtypeToken(mtype);
+  const allowedNormalized = new Set([...allowed].map(normalizePptxMtypeToken));
+  if (!allowedNormalized.has(fileType)) {
+    const allowedText = [...allowed].sort().join(', ');
+    return [
+      `type '${mtype}' does not match course_type '${courseType}' (allowed: ${allowedText}).`,
+    ];
+  }
+  return [];
+}
+
 /** @returns {string[]} */
 export function validatePptxMtypeForSession(courseType, sectionTypes, mtype) {
   const [xmlType, metaErrors] = xmlMetasessionTypeForCourseType(courseType, sectionTypes);
@@ -2032,7 +2355,7 @@ export const NEW_MODE_CSV_COLUMNS = [
   'question_placement', 'required_correct', 'attempt_window',
   'homework', 'section_gp', 'video_id', 'video_thumbnail_ts', 'activity_id', 'verbatim',
   'metasession_id', 'metasession_number', 'metasession_type', 'grade', 'term', 'subject',
-  'language', 'country', 'numerals', 'duration',
+  'language', 'country', 'numerals', 'duration', 'session_duration',
   'section_type', 'question_role', 'exam_id', 'exam_title',
   'verbatim_listening', 'verbatim_multipart', 'verbatim_number',
 ];

@@ -10,6 +10,8 @@ import {
   validateXmlMetasessionTypeSupported,
   validateSectionsForXmlMetasessionType,
   validateSeasonFromApi,
+  loadSessionRows,
+  sessionDurationFromCsvRows,
 } from './sessionCsv.js';
 import { QMS_QUESTION_METADATA_URL, SUBJECTS_REQUIRING_TRANSLATION } from './constants.js';
 import { getRawMetasessionData } from './metasessionApi.js';
@@ -19,6 +21,22 @@ const PRESENTATION_ROLES = new Set(['title', 'toc', 'instructional', 'video', 'a
 const QUESTION_ROLES = new Set(['example', 'interactive_example']);
 const QUESTION_ID_RE = /^(\d{12})\.(\d{2})$/;
 const SLIDE_GROUP_PAGES = new Set(['single', 'multiple']);
+
+async function sessionDurationFallbackFromCsvs(vfs, metasessionId) {
+  const mid = csvCellStr(metasessionId);
+  if (!mid) return null;
+  const csvPaths = (await vfs.glob(`csvs/${mid}_*.csv`)).sort();
+  for (const csvPath of csvPaths) {
+    try {
+      const rows = await loadSessionRows(vfs, csvPath);
+      const duration = sessionDurationFromCsvRows(rows);
+      if (duration != null) return duration;
+    } catch {
+      // ignore unreadable CSV and try next match
+    }
+  }
+  return null;
+}
 
 export function areQuestionTypesCompatible(xmlType, apiType) {
   const x = csvCellStr(xmlType);
@@ -93,17 +111,35 @@ function metaValue(metadata, key) {
   return csvCellStr(val);
 }
 
-export async function validateMtXmlText(xmlText, { fetchFn = fetch, validateApi = true, apiData = null, permissions = null } = {}) {
+export async function validateMtXmlText(xmlText, {
+  fetchFn = fetch,
+  validateApi = true,
+  apiData = null,
+  permissions = null,
+  sessionDurationFallback = null,
+} = {}) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlText, 'application/xml');
   const parseError = doc.querySelector('parsererror');
   if (parseError) {
     return { errors: [`XML is not well formed: ${parseError.textContent || 'parse error'}`], warnings: [], summary: {} };
   }
-  return validateMtXmlDocument(doc, { fetchFn, validateApi, apiData, permissions });
+  return validateMtXmlDocument(doc, {
+    fetchFn,
+    validateApi,
+    apiData,
+    permissions,
+    sessionDurationFallback,
+  });
 }
 
-export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi = true, apiData = null, permissions = null } = {}) {
+export async function validateMtXmlDocument(doc, {
+  fetchFn = fetch,
+  validateApi = true,
+  apiData = null,
+  permissions = null,
+  sessionDurationFallback = null,
+} = {}) {
   const errors = [];
   const warnings = [];
   const summary = {};
@@ -149,6 +185,10 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
   for (const section of [...root.querySelectorAll('section')]) {
     const sectionId = section.getAttribute('section_id') || '?';
     const stype = csvCellStr(section.getAttribute('section_type'));
+    let stypeNorm = stype.toLowerCase().replace(/ /g, '_');
+    if (stypeNorm === 'full_curriculum' || stypeNorm === 'fullcurriculum') {
+      stypeNorm = 'regular';
+    }
     sectionTypeValues.push(stype);
     sectionIdValues.push(sectionId);
     const worksheets = [...section.children].filter((el) => el.tagName === 'worksheet');
@@ -157,6 +197,7 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
       if (!isTwelveDigitId(worksheet.getAttribute('worksheet_id'))) errors.push(`section ${sectionId}: worksheet_id must be a 12-digit ID.`);
       if (
         !worksheet.querySelector(':scope > question')
+        && stypeNorm === 'regular'
         && !perms.hasSectionPermission(sectionId, 'questionless_section')
       ) {
         warnings.push(`section ${sectionId}: worksheet has no questions.`);
@@ -330,6 +371,8 @@ export async function validateMtXmlDocument(doc, { fetchFn = fetch, validateApi 
       grade,
       subject: csvCellStr(root.getAttribute('subject')),
       permissions: perms,
+      apiData: resolvedApiData,
+      sessionDurationFallback,
     }));
   }
 
@@ -401,6 +444,7 @@ export async function validateXmlOutputs(ctx) {
     const result = await validateMtXmlText(xmlText, {
       fetchFn,
       permissions: permissionsForMetasession(permissionsByMeta, metasessionId),
+      sessionDurationFallback: await sessionDurationFallbackFromCsvs(vfs, metasessionId),
     });
     allErrors.push(...result.errors.map((err) => `${name}: ${err}`));
     allWarnings.push(...result.warnings.map((warn) => `${name}: ${warn}`));

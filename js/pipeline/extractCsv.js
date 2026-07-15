@@ -195,13 +195,13 @@ function getCsvColumns(isNewMode) {
   ];
   columns.push(...HEADER_FIELDS);
   if (isNewMode) {
-    columns.push('section_type', 'question_role', 'exam_id', 'exam_title');
+    columns.push('session_duration', 'section_type', 'question_role', 'exam_id', 'exam_title');
   }
   columns.push('verbatim_listening', 'verbatim_multipart', 'verbatim_number');
   return columns;
 }
 
-function newModeBlankRow(slideNumber, slideId, sectionTitle, metasessionId) {
+function newModeBlankRow(slideNumber, slideId, sectionTitle, metasessionId, sessionDuration = '') {
   return [
     slideNumber,
     slideId,
@@ -219,6 +219,7 @@ function newModeBlankRow(slideNumber, slideId, sectionTitle, metasessionId) {
     '',
     slideNumber === 1 ? metasessionId : '',
     '', '', '', '', '', '', '', '', '',
+    slideNumber === 1 ? sessionDuration : '',
     '',
     '',
     '',
@@ -233,6 +234,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
   const extractedRows = [];
   const rawSlides = [];
   let metasessionId = '';
+  let sessionDuration = '';
   let defaultRequiredCorrect = '3';
   let defaultAttemptWindow = '5';
   let checkpointDefaultsFound = false;
@@ -256,7 +258,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const combinedText = collectedTexts.join(' ');
 
       const knownTagsForValidation = [...NEW_MODE_SLIDE_FIELDS];
-      if (slideNumber === 1) knownTagsForValidation.push('metasession_id');
+      if (slideNumber === 1) knownTagsForValidation.push('metasession_id', 'session_duration');
 
       const baseTagCounts = findTagOccurrences(combinedText, knownTagsForValidation);
       const verbatimNCounts = findVerbatimNOccurrences(combinedText);
@@ -275,7 +277,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         const allowedCompanions = new Set([
           'section_title', 'section_type', 'ar_section_type', 'en_section_type', ...SECTION_ID_TAGS,
         ]);
-        if (slideNumber === 1) allowedCompanions.add('metasession_id');
+        if (slideNumber === 1) {
+          allowedCompanions.add('metasession_id');
+          allowedCompanions.add('session_duration');
+        }
         const disallowed = Object.keys(allTagCounts)
           .filter((t) => !allowedCompanions.has(t))
           .sort();
@@ -288,9 +293,15 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       }
 
       if (slideNumber === 1) {
+        const slide1Fields = ['metasession_id', 'session_duration'];
         for (const textBlock of collectedTexts) {
-          const val = extractFieldValue(textBlock, 'metasession_id', slideNumber, ['metasession_id'], warn);
-          if (val && !metasessionId) metasessionId = val;
+          for (const field of slide1Fields) {
+            const val = extractFieldValue(textBlock, field, slideNumber, slide1Fields, warn);
+            if (field === 'metasession_id' && val && !metasessionId) metasessionId = val;
+            if (field === 'session_duration' && val && !sessionDuration) {
+              sessionDuration = String(val).trim();
+            }
+          }
         }
         const metaErr = validatePptxSlide1MetasessionId(`Slide ${slideNumber}`, metasessionId);
         if (metaErr) slideValidationErrors.push(metaErr);
@@ -302,7 +313,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
       const verbatimNTags = findVerbatimMultipartTags(combinedText);
       const baseTerminators = [...NEW_MODE_SLIDE_FIELDS, ...verbatimNTags];
       const terminatorFields = slideNumber === 1
-        ? [...baseTerminators, 'metasession_id']
+        ? [...baseTerminators, 'metasession_id', 'session_duration']
         : baseTerminators;
 
       for (const textBlock of collectedTexts) {
@@ -531,7 +542,8 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
               '',
               '',
               '', '', '', '', '', '', '', '', currentExamMarker.duration || '',
-              '',
+              '', // session_duration
+              '', // section_type
               'exam',
               currentExamMarker.exam_id || '',
               currentExamMarker.exam_title || '',
@@ -627,6 +639,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         slideData.activity_id || '',
         slideData.verbatim || '',
         '', '', '', '', '', '', '', '', '', slideData.duration || '',
+        '', // session_duration (title row only)
         rowSectionType,
         questionRole,
         slideData.exam_id || '',
@@ -655,7 +668,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     }
 
     const tocTitle = tocTitleForLanguage(sessionLang);
-    const syntheticTitle = newModeBlankRow(1, 'new', '', metasessionId);
+    const syntheticTitle = newModeBlankRow(1, 'new', '', metasessionId, sessionDuration);
     const syntheticToc = newModeBlankRow(2, 'new', tocTitle, metasessionId);
     extractedRows.unshift(syntheticToc);
     extractedRows.unshift(syntheticTitle);
@@ -939,6 +952,7 @@ async function validateCsvNewModeFromRows(rows, {
   grade = '',
   subject = '',
   fetchFn = fetch,
+  apiData = null,
 } = {}) {
   const validationErrors = [];
   const idLocations = {};
@@ -1062,6 +1076,7 @@ async function validateCsvNewModeFromRows(rows, {
       grade,
       subject,
       permissions,
+      apiData,
     }));
   }
 
@@ -1439,6 +1454,7 @@ export async function runExtractCsv(ctx, pptxFilenames) {
         grade: csvCellStr(reportRow?.Grade),
         subject,
         fetchFn,
+        apiData,
       });
 
       if (!isValidContent) {

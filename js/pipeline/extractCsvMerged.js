@@ -113,6 +113,7 @@ const NEW_MODE_MERGED_FIELDS = [
   'en_exam_title', 'ar_exam_title',
   'exam_id', 'exam_title', 'duration',
   'en_duration', 'ar_duration',
+  'session_duration',
   'section_type', 'ar_section_type', 'en_section_type',
 ];
 
@@ -143,7 +144,7 @@ const BASE_COLUMNS = [
 const NEW_MODE_COLUMNS = [
   ...BASE_COLUMNS,
   'metasession_id', 'numerals', 'question_role',
-  'duration', 'section_type', 'exam_id', 'exam_title',
+  'duration', 'session_duration', 'section_type', 'exam_id', 'exam_title',
 ];
 
 const BASE_AR_KEYS = [
@@ -354,11 +355,12 @@ function mergedSyntheticTocRow(baseKeys, lang) {
   };
   const row = rowWithVideoThumbnailTs(slide, baseKeys, lang);
   row[0] = 2;
-  row.push('', '', '', '', '', '', '');
+  // metasession_id, numerals, question_role, duration, session_duration, section_type, exam_id, exam_title
+  row.push('', '', '', '', '', '', '', '');
   return row;
 }
 
-function mergedSyntheticTitleRow(baseKeys, lang, metasessionId, sessionTitle = '') {
+function mergedSyntheticTitleRow(baseKeys, lang, metasessionId, sessionTitle = '', sessionDuration = '') {
   const slideIdKey = `${lang}_slide_id`;
   const slideTitleKey = `${lang}_slide_title`;
   const slide = {
@@ -369,7 +371,8 @@ function mergedSyntheticTitleRow(baseKeys, lang, metasessionId, sessionTitle = '
   };
   const row = rowWithVideoThumbnailTs(slide, baseKeys, lang);
   row[0] = 1;
-  row.push(metasessionId, '', '', '', '', '', '');
+  // metasession_id, numerals, question_role, duration, session_duration, section_type, exam_id, exam_title
+  row.push(metasessionId, '', '', '', sessionDuration, '', '', '');
   return row;
 }
 
@@ -612,6 +615,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         if (slideNumber === 1) {
           allowedCompanions.add('ar_metasession_id');
           allowedCompanions.add('en_metasession_id');
+          allowedCompanions.add('session_duration');
         }
         const disallowed = Object.keys(tagCounts)
           .filter((t) => !allowedCompanions.has(t))
@@ -1049,6 +1053,7 @@ async function validateCsvNewModeFromRows(rows, {
   grade = '',
   subject = '',
   fetchFn = fetch,
+  apiData = null,
 } = {}) {
   const validationErrors = [];
   const idLocations = {};
@@ -1172,6 +1177,7 @@ async function validateCsvNewModeFromRows(rows, {
       grade,
       subject,
       permissions,
+      apiData,
     }));
   }
 
@@ -1404,8 +1410,10 @@ function buildNewModeLangRows(slides, lang, metaId, sessionReportMap = {}) {
   const examIdKey = `${lang}_exam_id`;
   const examTitleKey = `${lang}_exam_title`;
   const sessionTitle = cleanedSessionTitleFromReportRow(sessionReportMap[metaId] || {});
+  const slide1 = slides[0] || {};
+  const sessionDuration = csvCellStr(slide1.session_duration);
   const rows = [
-    mergedSyntheticTitleRow(baseKeys, lang, metaId, sessionTitle),
+    mergedSyntheticTitleRow(baseKeys, lang, metaId, sessionTitle, sessionDuration),
     mergedSyntheticTocRow(baseKeys, lang),
   ];
 
@@ -1415,6 +1423,7 @@ function buildNewModeLangRows(slides, lang, metaId, sessionReportMap = {}) {
     row.push('', '');
     row.push(slide.question_role || '');
     row.push(slide[durationKey] || '');
+    row.push(''); // session_duration (title row only)
     row.push(slide.section_type || '');
     row.push(slide[examIdKey] || '');
     row.push(slide[examTitleKey] || '');
@@ -1489,6 +1498,7 @@ async function processAndValidateCsvNewMode(
     permissionsByMeta = null,
     courseType = '',
     xmlMetasessionType = '',
+    apiData = null,
   } = {},
 ) {
   log(`\n-> Processing ${basename(csvPath)} (NEW MODE)...`);
@@ -1537,6 +1547,7 @@ async function processAndValidateCsvNewMode(
     grade,
     subject,
     fetchFn: config.fetchFn || fetch,
+    apiData,
   });
   const practiceTypeErrors = await validatePracticeQuestionTypesFromRows(
     parsedRows,
@@ -1810,6 +1821,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
                 permissionsByMeta,
                 courseType: arCourseType,
                 xmlMetasessionType: computedType || '',
+                apiData: arApiData,
               },
             );
             processingSummary.push({
@@ -1887,6 +1899,7 @@ export async function runExtractCsvMerged(ctx, pptxFilenames) {
                 permissionsByMeta,
                 courseType: enCourseType,
                 xmlMetasessionType: computedType || '',
+                apiData: enApiData,
               },
             );
             processingSummary.push({

@@ -2,8 +2,7 @@
 import {
   csvCellStr,
   courseTypeFromApiData,
-  collectContentSectionTypesFromRows,
-  validatePptxMtypeForSession,
+  validatePptxMtypeAgainstCourseType,
 } from './sessionCsv.js';
 import { SESSION_NUMBER_MAP } from './sessionNumberDict.js';
 
@@ -116,10 +115,7 @@ export function validatePptxNameAgainstApi(stem, apiData, {
   }
 
   const courseType = courseTypeFromApiData(apiData);
-  const rows = csvRows || slides || [];
-  const [sectionTypes, secErrors] = collectContentSectionTypesFromRows(rows, courseType);
-  errors.push(...secErrors);
-  errors.push(...validatePptxMtypeForSession(courseType, sectionTypes, tags.mtype));
+  errors.push(...validatePptxMtypeAgainstCourseType(courseType, tags.mtype));
 
   return errors;
 }
