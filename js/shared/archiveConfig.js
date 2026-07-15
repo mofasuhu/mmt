@@ -23,7 +23,7 @@ export async function loadArchiveConfig(log = console.log) {
     const res = await fetch(ARCHIVE_CONFIG_FILE);
     if (res.ok) {
       loadedConfig = { ...DEFAULT_ARCHIVE_CONFIG, ...(await res.json()) };
-      log(`Loaded archive paths from ${ARCHIVE_CONFIG_FILE}`);
+      // log(`Loaded archive paths from ${ARCHIVE_CONFIG_FILE}`);
       return loadedConfig;
     }
   } catch {

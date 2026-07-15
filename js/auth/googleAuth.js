@@ -172,7 +172,7 @@ export class GoogleAuth {
     if (clientId) {
       this.oauthClientId = clientId;
       this.clientId = clientId;
-      log(`Loaded OAuth web client from ${OAUTH_CONFIG_FILE}`);
+      // log(`Loaded OAuth web client from ${OAUTH_CONFIG_FILE}`);
     }
 
     if (Array.isArray(config.scopes) && config.scopes.length) {
@@ -182,7 +182,7 @@ export class GoogleAuth {
     const proxy = String(config.cors_proxy_url || '').trim();
     if (proxy) {
       this.corsProxyUrl = proxy;
-      log(`Default CORS proxy from ${OAUTH_CONFIG_FILE}: ${proxy}`);
+      // log(`Default CORS proxy from ${OAUTH_CONFIG_FILE}: ${proxy}`);
     }
 
     return Boolean(this.oauthClientId);

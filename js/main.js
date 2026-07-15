@@ -281,10 +281,10 @@ async function mountStaticArchivesIfAvailable() {
 
   const fsApiBase = resolveFsApiBase(config);
   if (!fsApiBase && !isDevServerHost()) {
-    log(
-      'Archive auto-mount skipped on static hosting — browsers cannot read local disk paths. '
-      + 'Run node proxy/dev-server.mjs (http://127.0.0.1:8788) or set fs_api_base in archive-config.json.',
-    );
+    // log(
+    //   'Archive auto-mount skipped on static hosting — browsers cannot read local disk paths. '
+    //   + 'Run node proxy/dev-server.mjs (http://127.0.0.1:8788) or set fs_api_base in archive-config.json.',
+    // );
     return false;
   }
 
@@ -616,9 +616,9 @@ async function probeApisOnLoad() {
       await mountStaticArchivesIfAvailable();
     }
   } else if (isGitHubPagesHost()) {
-    log('Published mode — paste a Slides URL, pick folders, then run pipeline.');
+    // log('Published mode — paste a Slides URL, pick folders, then run pipeline.');
     if (proxy) {
-      log(`CORS proxy: ${proxy}`);
+      // log(`CORS proxy: ${proxy}`);
     } else {
       log('⚠️  No CORS proxy configured — Nagwa API calls will fail on GitHub Pages until you deploy proxy/worker.js and set cors_proxy_url in oauth-config.json.');
     }
