@@ -1781,12 +1781,12 @@ export function validateRule40_60Mcq(
   const errors = [];
   const total = liveTotal + worksheetTotal;
   const mcq = liveMcq + worksheetMcq;
-  if (total > 0 && mcq / total >= 0.6) {
+  if (total > 0 && mcq / total > 0.6) {
     const pct = Math.round((100 * mcq) / total * 10) / 10;
     const nonMcq = total - mcq;
     const nonPct = Math.round((100 * nonMcq) / total * 10) / 10;
     errors.push(
-      `MCQ share is ${pct}% (${mcq}/${total}); must be less than 60% `
+      `MCQ share is ${pct}% (${mcq}/${total}); must be less than or equal to 60% `
       + `(non-MCQ must be at least 40%; currently ${nonPct}%).`,
     );
   }
