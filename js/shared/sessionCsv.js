@@ -2030,11 +2030,11 @@ export function countSlidesForDurationFromRows(rows) {
     const sectionTitle = csvCellStr(row.section_title);
     const slideTitle = csvCellStr(row.slide_title);
     if (isThankYouTitle(sectionTitle) || isThankYouTitle(slideTitle)) continue;
-    if (
-      slideTitle === 'Well Done!'
-      || isWellDoneTitle(slideTitle)
-      || isWellDoneTitle(sectionTitle)
-    ) continue;
+    // if (
+    //   slideTitle === 'Well Done!'
+    //   || isWellDoneTitle(slideTitle)
+    //   || isWellDoneTitle(sectionTitle)
+    // ) continue;
     count += 1;
   }
   return count;
