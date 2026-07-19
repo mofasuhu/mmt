@@ -738,6 +738,18 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
       !wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
   );
 
+  const emptySectionTitleErrors = [];
+  for (const row of mainContent) {
+    if (csvCellStr(row.section_title)) continue;
+    const slideNumber = csvCellStr(row.slide_number) || '?';
+    emptySectionTitleErrors.push(
+      `Slide ${slideNumber}: main-content row has empty section_title.`,
+    );
+  }
+  if (emptySectionTitleErrors.length) {
+    throw new Error(emptySectionTitleErrors.join('; '));
+  }
+
   const [slideGroupPlans, slideGroupByIndex] =
     collectInstructionalSlideGroupPlansForMainContent(mainContent, sessionRowsProcessed);
   if (slideGroupPlans.length) {
@@ -1107,8 +1119,6 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
 
     if (questionsInWorksheet.has(formatQuestionId(qId))) continue;
-
-    if (!sectionTitle && isBlank(qId)) continue;
 
     const slideGroupPlan = slideGroupByIndex.get(idx);
     if (slideGroupPlan && idx !== slideGroupPlan.first_row_index) continue;
