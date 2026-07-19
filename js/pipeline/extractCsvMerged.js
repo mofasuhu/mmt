@@ -18,6 +18,7 @@ import {
   isTwelveDigitId,
   isSectionId,
   isRecapTitle,
+  isWellDoneTitle,
   sectionIdValidationError,
   validateSessionSectionCoverage,
   validateSectionTitlesFromCsv,
@@ -694,7 +695,6 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let currentSectionType = '';
     let sectionTypeUsed = false;
     let previousWasCheckpoint = false;
-    let postQuestionSectionActive = false;
     let postThankExamActive = false;
     let examExpectQuestions = false;
     let currentExamMarker = {};
@@ -707,11 +707,6 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         if (slide.attempt_window) defaultAttemptWindow = slide.attempt_window;
         break;
       }
-    }
-
-    let lastQuestionRawIndex = -1;
-    for (let idx = 0; idx < rawSlides.length; idx += 1) {
-      if ((rawSlides[idx].question_id || '').trim()) lastQuestionRawIndex = idx;
     }
 
     const processedSlides = [];
@@ -839,15 +834,17 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
           currentSectionType = resolvedType;
           sectionTypeUsed = false;
         }
-        if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
         continue;
       }
 
       const isRecapSlide = isRecapTitle(slide.ar_slide_title || '')
         || isRecapTitle(slide.en_slide_title || '');
-      const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
-      let isRootTailSlide = afterLastQuestion && !postQuestionSectionActive;
-      if (isThankYouSlideMerged(slide) || isRecapSlide) isRootTailSlide = true;
+      const isWellDoneSlide = isWellDoneTitle(slide.ar_slide_title || '')
+        || isWellDoneTitle(slide.en_slide_title || '');
+      // Post-last-question instructional slides stay in the preceding section.
+      let isRootTailSlide = Boolean(
+        isThankYouSlideMerged(slide) || isRecapSlide || isWellDoneSlide || isAfterThankYou,
+      );
       if (isRootTailSlide) {
         currentArSection = '';
         currentEnSection = '';
@@ -893,7 +890,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
       const isRecapAfterProp = isRecapTitle(slide.ar_slide_title || '')
         || isRecapTitle(slide.en_slide_title || '');
-      if (isRecapAfterProp) {
+      const isWellDoneAfterProp = isWellDoneTitle(slide.ar_slide_title || '')
+        || isWellDoneTitle(slide.en_slide_title || '');
+      if (isRecapAfterProp || isWellDoneAfterProp) {
         isRootTailSlide = true;
         currentArSection = '';
         currentEnSection = '';

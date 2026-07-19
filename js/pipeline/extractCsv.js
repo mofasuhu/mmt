@@ -22,6 +22,7 @@ import {
   isTwelveDigitId,
   isSectionId,
   isRecapTitle,
+  isWellDoneTitle,
   sectionIdValidationError,
   validateSessionSectionCoverage,
   validateSectionTitlesFromCsv,
@@ -427,17 +428,9 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
     let procSectionType = '';
     let sectionTypeUsed = false;
     let procPreviousCheckpoint = false;
-    let postQuestionSectionActive = false;
     let postThankExamActive = false;
     let examExpectQuestions = false;
     let currentExamMarker = {};
-
-    let lastQuestionRawIndex = -1;
-    for (let idx = 0; idx < rawSlides.length; idx += 1) {
-      if ((rawSlides[idx].question_id || '').trim() && (rawSlides[idx].question_role || '').toLowerCase() !== 'exam') {
-        lastQuestionRawIndex = idx;
-      }
-    }
 
     for (let slideIdx = 0; slideIdx < rawSlides.length; slideIdx += 1) {
       const slideData = rawSlides[slideIdx];
@@ -453,7 +446,6 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         && !hasSlideId && !hasVideoId && !hasActivityId && !hasExamMarker;
 
       if (isPlaceholder) {
-        if (slideIdx > lastQuestionRawIndex) postQuestionSectionActive = true;
         procSectionTitle = slideData.section_title || '';
         const sid = (slideData.section_id || '').trim();
         if (isSectionId(sid)) procSectionId = sid;
@@ -472,9 +464,12 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
 
       const isThankYou = isThankYouSlide(slideData.slide_title || '');
       const isRecap = isRecapTitle(slideData.slide_title || '');
-      const afterLastQuestion = lastQuestionRawIndex >= 0 && slideIdx > lastQuestionRawIndex;
-      let isRootTail = afterLastQuestion && !postQuestionSectionActive;
+      const isWellDone = isWellDoneTitle(slideData.slide_title || '');
       const isAfterThankYou = thankYouRawIndex !== null && slideIdx > thankYouRawIndex;
+      // Post-last-question instructional slides stay in the preceding section
+      // (same as mid-session post-worksheet slides). Only thank/recap/well-done
+      // /post-thank-you content is session-root.
+      let isRootTail = Boolean(isThankYou || isRecap || isWellDone || isAfterThankYou);
       const questionRole = (slideData.question_role || '').toLowerCase().replace(/ /g, '_');
       const qid = (slideData.question_id || '').trim();
       const isExamMarker = isMonoExamMarkerSlide(slideData);
@@ -564,7 +559,7 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
           continue;
         }
       }
-      if (isThankYou || isRecap || isAfterThankYou) isRootTail = true;
+      if (isThankYou || isRecap || isWellDone || isAfterThankYou) isRootTail = true;
       if (isRootTail) {
         procSectionTitle = '';
         procSectionId = '';
@@ -610,7 +605,12 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         if (standardizedTitle) finalSectionTitle = standardizedTitle;
       }
 
-      if (isRecap || isRecapTitle(finalSectionTitle)) {
+      if (
+        isRecap
+        || isWellDone
+        || isRecapTitle(finalSectionTitle)
+        || isWellDoneTitle(finalSectionTitle)
+      ) {
         isRootTail = true;
       }
 
