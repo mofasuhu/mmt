@@ -743,7 +743,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     if (csvCellStr(row.section_title)) continue;
     const slideNumber = csvCellStr(row.slide_number) || '?';
     emptySectionTitleErrors.push(
-      `Slide ${slideNumber}: main-content row has empty section_title.`,
+      `Slide ${slideNumber}: main-content row has empty section_title`,
     );
   }
   if (emptySectionTitleErrors.length) {
