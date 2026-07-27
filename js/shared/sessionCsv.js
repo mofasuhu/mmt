@@ -1729,7 +1729,9 @@ export function validateRegularSectionLiveRoles(regularSections, rows, permissio
 export function isRule40Exempt(grade, subject) {
   const g = Number.parseInt(normalizeGradeForXml(grade), 10);
   if ([10, 11, 12].includes(g)) return true;
-  return ICT_SUBJECTS_RULE40_EXEMPT.has(csvCellStr(subject).toLowerCase());
+  const subj = csvCellStr(subject).toLowerCase();
+  if (g === 1 && subj === 'اللغة العربية') return true;
+  return ICT_SUBJECTS_RULE40_EXEMPT.has(subj);
 }
 
 function rule40BucketForRole(role) {
