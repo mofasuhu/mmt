@@ -3236,7 +3236,8 @@ export async function fetchQuestionMetadataByParentIds(
 export function expandQuestionRowsFromApi(rows, metadataByParent, plans = null) {
   let resolvedPlans = plans;
   if (resolvedPlans == null) {
-    const [built] = buildQuestionExpandPlans(rows);
+    const [built, planErrors] = buildQuestionExpandPlans(rows);
+    if (planErrors.length) return rows.map((r) => ({ ...r }));
     resolvedPlans = built;
   }
 
