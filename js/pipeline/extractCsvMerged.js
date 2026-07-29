@@ -53,7 +53,7 @@ import {
   bilingualExamMarkerPurityErrors,
   resolveBilingualExamMarkerFields,
   resolveMonoExamMarkerFields,
-  normalizeQuestionIdBase,
+  normalizeQuestionIdPreservingPart,
   normalizeQuestionRole,
   permissionsForMetasession,
   validateSessionContentRules,
@@ -405,7 +405,7 @@ function extractInfoFromSlideLegacy(slideText, slideNumber, warn) {
     res[f] = extractMergedFieldValue(slideText, f, LEGACY_MERGED_FIELDS);
   }
   if (res.question_id) {
-    res.question_id = normalizeQuestionIdBase(res.question_id) || '';
+    res.question_id = normalizeQuestionIdPreservingPart(res.question_id);
   }
   res.question_placement = normalizeQuestionPlacement(
     res.question_placement || '', slideNumber, warn,
@@ -422,7 +422,7 @@ function extractInfoFromSlideNewMode(slideText, slideNumber) {
     res[f] = extractMergedFieldValue(slideText, f, terminators);
   }
   if (res.question_id) {
-    res.question_id = res.question_id.replace(/checkpoint/gi, '').trim();
+    res.question_id = normalizeQuestionIdPreservingPart(res.question_id);
   }
 
   const bareSlideId = extractMergedFieldValue(slideText, 'slide_id', terminators);

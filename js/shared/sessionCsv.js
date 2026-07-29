@@ -2935,12 +2935,184 @@ export function normalizeQuestionIdBase(raw) {
   return m2 ? m2[1] : null;
 }
 
+function compactQuestionIdRaw(raw) {
+  let s = csvCellStr(raw);
+  if (!s) return '';
+  s = s.replace(/\s*checkpoint\s*$/i, '').trim();
+  return s.replace(/\s+/g, '');
+}
+
+/**
+ * Parse a question_id tag into [base, partOrNull, explicitPart].
+ * Bare 12-digit → [base, null, false]; part-qualified → [base, N, true].
+ * @returns {[string|null, number|null, boolean]}
+ */
+export function parseQuestionIdTag(raw) {
+  const compact = compactQuestionIdRaw(raw);
+  if (!compact) return [null, null, false];
+  const match = compact.match(/^(\d{12})(?:\.(\d+))?$/);
+  if (!match) {
+    const base = normalizeQuestionIdBase(compact);
+    return base ? [base, null, false] : [null, null, false];
+  }
+  const base = match[1];
+  if (match[2] != null) {
+    return [base, Number.parseInt(match[2], 10), true];
+  }
+  return [base, null, false];
+}
+
+/** Normalize question_id, preserving an optional .N part suffix. */
+export function normalizeQuestionIdPreservingPart(raw) {
+  const [base, part, explicit] = parseQuestionIdTag(raw);
+  if (!base) return '';
+  if (explicit && part != null) return `${base}.${part}`;
+  return base;
+}
+
+/**
+ * @typedef {object} QuestionExpandPlan
+ * @property {string} section_id
+ * @property {string} base_id
+ * @property {Record<string, string>} template_row
+ * @property {'inherit'|'per_part'} mode
+ * @property {string} inherit_role
+ * @property {Record<number, string>|null} roles_by_part
+ * @property {number} max_extracted_part
+ */
+
+function sectionLabelForQidError(sectionId) {
+  return sectionId ? `Section ${sectionId}` : 'Section (unknown)';
+}
+
+/**
+ * Validate Mode A/B tagging and build expand plans keyed by `${section}\\0${base}`.
+ * @param {Record<string, string>[]} rows
+ * @returns {[Map<string, QuestionExpandPlan>, string[]]}
+ */
+export function buildQuestionExpandPlans(rows) {
+  /** @type {Map<string, Record<string, string>[]>} */
+  const groups = new Map();
+  /** @type {string[]} */
+  const groupOrder = [];
+
+  for (const row of rows) {
+    const [base] = parseQuestionIdTag(row.question_id);
+    if (!base) continue;
+    const sid = normalizeSectionId(row.section_id) || '';
+    const key = `${sid}\0${base}`;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      groupOrder.push(key);
+    }
+    groups.get(key).push(row);
+  }
+
+  /** @type {Map<string, QuestionExpandPlan>} */
+  const plans = new Map();
+  const errors = [];
+
+  for (const key of groupOrder) {
+    const [sid, base] = key.split('\0');
+    const groupRows = groups.get(key);
+    const label = sectionLabelForQidError(sid);
+    const parsed = groupRows.map((row) => {
+      const [, part, explicit] = parseQuestionIdTag(row.question_id);
+      return { row, part, explicit };
+    });
+
+    const hasBare = parsed.some((p) => !p.explicit);
+    const hasPart = parsed.some((p) => p.explicit);
+    if (hasBare && hasPart) {
+      errors.push(
+        `${label}: question_id '${base}' mixes bare id and part-qualified `
+        + 'ids (.N); use only one tagging style.',
+      );
+      continue;
+    }
+
+    if (hasBare) {
+      if (parsed.length > 1) {
+        errors.push(`${label}: question_id '${base}' has duplicate bare id tags.`);
+        continue;
+      }
+      const { row } = parsed[0];
+      plans.set(key, {
+        section_id: sid,
+        base_id: base,
+        template_row: { ...row },
+        mode: 'inherit',
+        inherit_role: csvCellStr(row.question_role),
+        roles_by_part: null,
+        max_extracted_part: 1,
+      });
+      continue;
+    }
+
+    /** @type {Record<number, string>} */
+    const rolesByPart = {};
+    let invalidPart = false;
+    for (const { row, part } of parsed) {
+      if (part == null || part < 1) {
+        errors.push(
+          `${label}: question_id '${base}' has invalid part number `
+          + `'${csvCellStr(row.question_id)}'.`,
+        );
+        invalidPart = true;
+        break;
+      }
+      if (Object.prototype.hasOwnProperty.call(rolesByPart, part)) {
+        errors.push(`${label}: question_id '${base}' has duplicate part ${part}.`);
+        invalidPart = true;
+        break;
+      }
+      rolesByPart[part] = csvCellStr(row.question_role);
+    }
+    if (invalidPart) continue;
+
+    const maxPart = Math.max(...Object.keys(rolesByPart).map((k) => Number(k)));
+    const expected = new Set();
+    for (let i = 1; i <= maxPart; i += 1) expected.add(i);
+    const present = new Set(Object.keys(rolesByPart).map((k) => Number(k)));
+    let gaps = false;
+    if (present.size !== expected.size) gaps = true;
+    else {
+      for (const p of expected) {
+        if (!present.has(p)) {
+          gaps = true;
+          break;
+        }
+      }
+    }
+    if (gaps) {
+      const presentSorted = [...present].sort((a, b) => a - b);
+      errors.push(
+        `${label}: question_id '${base}' has gaps in parts `
+        + `${JSON.stringify(presentSorted)}; expected consecutive 1..${maxPart}.`,
+      );
+      continue;
+    }
+
+    plans.set(key, {
+      section_id: sid,
+      base_id: base,
+      template_row: { ...parsed[0].row },
+      mode: 'per_part',
+      inherit_role: '',
+      roles_by_part: rolesByPart,
+      max_extracted_part: maxPart,
+    });
+  }
+
+  return [plans, errors];
+}
+
 export function normalizeQuestionIdsInRows(rows) {
   return rows.map((row) => {
     const r = { ...row };
-    const base = normalizeQuestionIdBase(r.question_id);
-    if (base) {
-      r.question_id = base;
+    const normalized = normalizeQuestionIdPreservingPart(r.question_id);
+    if (normalized) {
+      r.question_id = normalized;
       return clearSlideIdForMediaRow(r);
     }
     return r;
@@ -3061,30 +3233,90 @@ export async function fetchQuestionMetadataByParentIds(
   return [parentMetadata, errors];
 }
 
-export function expandQuestionRowsFromApi(rows, metadataByParent) {
+export function expandQuestionRowsFromApi(rows, metadataByParent, plans = null) {
+  let resolvedPlans = plans;
+  if (resolvedPlans == null) {
+    const [built] = buildQuestionExpandPlans(rows);
+    resolvedPlans = built;
+  }
+
   const out = [];
+  const seenPlans = new Set();
   for (const row of rows) {
-    const base = normalizeQuestionIdBase(row.question_id);
+    const [base] = parseQuestionIdTag(row.question_id);
     if (!base) {
       out.push(row);
       continue;
     }
-    const meta = metadataByParent.get(base);
-    if (!meta) {
-      out.push(row);
+    const sid = normalizeSectionId(row.section_id) || '';
+    const key = `${sid}\0${base}`;
+    const plan = resolvedPlans instanceof Map ? resolvedPlans.get(key) : null;
+
+    if (!plan) {
+      const meta = metadataByParent instanceof Map
+        ? metadataByParent.get(base)
+        : metadataByParent?.[base];
+      if (!meta) {
+        out.push(row);
+        continue;
+      }
+      const numParts = Number.parseInt(meta.number_of_parts ?? 1, 10) || 1;
+      if (numParts <= 1) {
+        const r = { ...row, question_id: base };
+        out.push(clearSlideIdForMediaRow(r));
+      } else {
+        for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
+          out.push({ ...row, question_id: `${base}.${partIndex}`, slide_id: '' });
+        }
+      }
       continue;
     }
+
+    if (seenPlans.has(key)) continue;
+    seenPlans.add(key);
+
+    const meta = metadataByParent instanceof Map
+      ? metadataByParent.get(base)
+      : metadataByParent?.[base];
+    if (!meta) {
+      const r = {
+        ...plan.template_row,
+        question_id: base,
+        question_role: roleForExpandedPart(plan, 1),
+      };
+      out.push(clearSlideIdForMediaRow(r));
+      continue;
+    }
+
     const numParts = Number.parseInt(meta.number_of_parts ?? 1, 10) || 1;
     if (numParts <= 1) {
-      const r = { ...row, question_id: base };
+      const r = {
+        ...plan.template_row,
+        question_id: base,
+        question_role: roleForExpandedPart(plan, 1),
+      };
       out.push(clearSlideIdForMediaRow(r));
     } else {
       for (let partIndex = 1; partIndex <= numParts; partIndex += 1) {
-        out.push({ ...row, question_id: `${base}.${partIndex}`, slide_id: '' });
+        out.push({
+          ...plan.template_row,
+          question_id: `${base}.${partIndex}`,
+          question_role: roleForExpandedPart(plan, partIndex),
+          slide_id: '',
+        });
       }
     }
   }
   return out;
+}
+
+function roleForExpandedPart(plan, partIndex) {
+  if (plan.mode === 'inherit') return plan.inherit_role;
+  const roles = plan.roles_by_part || {};
+  if (Object.prototype.hasOwnProperty.call(roles, partIndex)) {
+    return roles[partIndex];
+  }
+  return roles[plan.max_extracted_part] ?? plan.inherit_role;
 }
 
 function questionRowsContentChanged(before, after) {
@@ -3092,6 +3324,7 @@ function questionRowsContentChanged(before, after) {
   for (let i = 0; i < before.length; i += 1) {
     if (csvCellStr(before[i].question_id) !== csvCellStr(after[i].question_id)) return true;
     if (csvCellStr(before[i].slide_id) !== csvCellStr(after[i].slide_id)) return true;
+    if (csvCellStr(before[i].question_role) !== csvCellStr(after[i].question_role)) return true;
   }
   return false;
 }
@@ -3105,13 +3338,25 @@ export async function processQuestionIdsFromApi(
   rows,
   { subject = '', log = () => {}, fetchFn = fetch } = {},
 ) {
-  let processed = normalizeQuestionIdsInRows(rows);
-  processed = dedupeQuestionRowsByBasePerSection(processed);
-  const baseIds = collectBaseQuestionIds(processed);
-  if (!baseIds.length) return [processed, []];
+  const processed = normalizeQuestionIdsInRows(rows);
+  const [plans, planErrors] = buildQuestionExpandPlans(processed);
+  if (planErrors.length) {
+    for (const err of planErrors) log(`   [ERROR] ${err}`);
+    return [processed, planErrors];
+  }
+
+  const seenBases = new Set();
+  const orderedBases = [];
+  for (const plan of plans.values()) {
+    if (!seenBases.has(plan.base_id)) {
+      seenBases.add(plan.base_id);
+      orderedBases.push(plan.base_id);
+    }
+  }
+  if (!orderedBases.length) return [processed, []];
 
   const [metadataByParent, errors] = await fetchQuestionMetadataByParentIds(
-    baseIds,
+    orderedBases,
     { subject, fetchFn },
   );
   if (errors.length) {
@@ -3119,7 +3364,7 @@ export async function processQuestionIdsFromApi(
     return [processed, errors];
   }
 
-  const expanded = expandQuestionRowsFromApi(processed, metadataByParent);
+  const expanded = expandQuestionRowsFromApi(processed, metadataByParent, plans);
   if (expanded.length !== processed.length) {
     log(`   [Question ID Expansion] ${processed.length} rows -> ${expanded.length} rows`);
   }

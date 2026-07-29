@@ -9,7 +9,7 @@ import {
 } from '../shared/constants.js';
 import {
   isThankYouTitle,
-  normalizeQuestionIdBase,
+  normalizeQuestionIdPreservingPart,
   standardizedThankYouTitle,
 } from '../shared/sessionCsv.js';
 
@@ -92,9 +92,8 @@ export function extractFieldValue(text, field, slideNumber, allFields, warn = ()
   if (!v) return '';
 
   if (field === 'question_id') {
-    v = v.replace(/\s*checkpoint\s*$/i, '').trim();
-    const base = normalizeQuestionIdBase(v);
-    return base || '';
+    // Preserve optional .N part suffix for per-part live roles
+    return normalizeQuestionIdPreservingPart(v);
   }
 
   if (field === 'homework') {
