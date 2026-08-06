@@ -21,6 +21,8 @@ import {
   isPlainTwelveDigitId,
   thankYouTitleForLanguage,
   isThankYouTitle,
+  wellDoneTitleForLanguage,
+  isWellDoneTitle,
   requireLanguageFromApiData,
   cleanedSessionTitleFromReportRow,
   liveSlideRoleFromRow,
@@ -713,10 +715,9 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   let postThankYouRows = [];
 
   let recapSlides = remaining.filter((r) => isRecapTitle(String(r.section_title ?? '')));
-  const wellDoneKeywords = ['well done', 'well done!', 'عمل رائع', 'عمل رائع!'];
 
   let wellDoneSlides = remaining.filter((r) =>
-    wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
+    isWellDoneTitle(String(r.section_title ?? '')),
   );
 
   let lastRow = null;
@@ -735,7 +736,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   const mainContent = remaining.filter(
     (r) =>
       !isRecapTitle(String(r.section_title ?? '')) &&
-      !wellDoneKeywords.includes(stripTashkeel(String(r.section_title ?? '')).toLowerCase()),
+      !isWellDoneTitle(String(r.section_title ?? '')),
   );
 
   const emptySectionTitleErrors = [];
@@ -1166,7 +1167,7 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
     }
     if (slideId) {
       metasession.appendChild(
-        createEl(doc, 'slide', slideAttrs(slideId, 'instructional', String(row.section_title ?? 'Well Done!').trim())),
+        createEl(doc, 'slide', slideAttrs(slideId, 'instructional', wellDoneTitleForLanguage(lang))),
       );
     }
   }

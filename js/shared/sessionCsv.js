@@ -180,6 +180,15 @@ const THANK_YOU_TITLE_NORMALIZED = new Set([
   'grazie',
 ]);
 
+export const WELL_DONE_TITLE_BY_LANGUAGE = {
+  ar: 'عمل رائع!',
+  de: 'Gut gemacht!',
+  en: 'Well Done!',
+  es: '¡Bien hecho!',
+  fr: 'Bravo !',
+  it: 'Ben fatto!',
+};
+
 export function languageFromCsvPath(csvPath) {
   throw new Error(
     'languageFromCsvPath is deprecated; use requireLanguageFromReportRow() with metasession API data instead',
@@ -270,11 +279,12 @@ export function validatePptxSlide1MergedMetasessionIds(slideLabel, arMetasession
   return errors;
 }
 
-/** Map canonical Example/Question/Thank-you slide titles to the session language. */
+/** Map canonical Example/Question/Thank-you/Well-done slide titles to the session language. */
 export function localizeCanonicalSlideTitle(title, lang) {
   const text = csvCellStr(title);
   if (!text) return text;
   if (isThankYouTitle(text)) return thankYouTitleForLanguage(lang);
+  if (isWellDoneTitle(text)) return wellDoneTitleForLanguage(lang);
   const code = normalizeLanguageCode(lang);
   const mapping = CANONICAL_SLIDE_TITLES[text.toLowerCase()];
   if (mapping) return mapping[code] || text;
@@ -655,6 +665,24 @@ export function standardizedThankYouTitle(lang, detectedTitle = '') {
   return thankYouTitleForLanguage(lang);
 }
 
+export function wellDoneTitleForLanguage(lang) {
+  const code = normalizeLanguageCode(lang);
+  return WELL_DONE_TITLE_BY_LANGUAGE[code] || WELL_DONE_TITLE_BY_LANGUAGE.en;
+}
+
+export function standardizedWellDoneTitle(lang, detectedTitle = '') {
+  if (detectedTitle && !isWellDoneTitle(detectedTitle)) return null;
+  return wellDoneTitleForLanguage(lang);
+}
+
+const WELL_DONE_TITLE_NORMALIZED = new Set(
+  Object.values(WELL_DONE_TITLE_BY_LANGUAGE).map((t) => normalizeThankYouTitleForMatch(t)),
+);
+
+export function isWellDoneTitle(title) {
+  return WELL_DONE_TITLE_NORMALIZED.has(normalizeThankYouTitleForMatch(title));
+}
+
 export function isRecapTitle(title) {
   return RECAP_TITLES.has(stripTashkeel(title).toLowerCase());
 }
@@ -838,12 +866,6 @@ export function isInstructionalInSectionSlide(slide, { bilingual = false } = {})
   }
   if (csvCellStr(slide?.activity_id)) return false;
   return true;
-}
-
-const WELL_DONE_TITLES = new Set(['well done', 'عمل رائع']);
-
-export function isWellDoneTitle(title) {
-  return WELL_DONE_TITLES.has(stripTashkeel(csvCellStr(title)).toLowerCase().replace(/^!+|!+$/g, ''));
 }
 
 export function isBilingualThankYouSlide(slide) {
@@ -2012,18 +2034,18 @@ export function resolveSessionDurationMinutes({
 }
 
 export function countSlidesForDurationFromXml(root) {
+  /** Count content slides excluding title/toc/thank_you (Well Done included). Floor to 1. */
   let count = 0;
   for (const slide of [...root.querySelectorAll('slide')]) {
     const role = csvCellStr(slide.getAttribute('slide_role')).toLowerCase().replace(/ /g, '_');
     if (SLIDE_DURATION_EXCLUDED_ROLES.has(role)) continue;
-    const title = csvCellStr(slide.getAttribute('slide_title'));
-    if (title === 'Well Done!' || isWellDoneTitle(title)) continue;
     count += 1;
   }
-  return count;
+  return count > 0 ? count : 1;
 }
 
 export function countSlidesForDurationFromRows(rows) {
+  /** Excludes title (1–2) and thank-you; includes Well Done. Floor to 1. */
   let count = 0;
   for (const row of rows) {
     if (!csvCellStr(row.slide_id)) continue;
@@ -2032,14 +2054,9 @@ export function countSlidesForDurationFromRows(rows) {
     const sectionTitle = csvCellStr(row.section_title);
     const slideTitle = csvCellStr(row.slide_title);
     if (isThankYouTitle(sectionTitle) || isThankYouTitle(slideTitle)) continue;
-    // if (
-    //   slideTitle === 'Well Done!'
-    //   || isWellDoneTitle(slideTitle)
-    //   || isWellDoneTitle(sectionTitle)
-    // ) continue;
     count += 1;
   }
-  return count;
+  return count > 0 ? count : 1;
 }
 
 export function validateSlideDuration({
@@ -2049,18 +2066,15 @@ export function validateSlideDuration({
 } = {}) {
   const errors = [...(missingErrors || [])];
   if (durationMinutes == null) return errors;
-  if (slideCount <= 0) {
-    errors.push(
-      'Cannot compute slide_duration: no countable content slides found '
-      + '(excluding title, toc, thank_you, and Well Done!).',
-    );
-    return errors;
-  }
-  const slideDuration = durationMinutes / slideCount;
+  let n = slideCount;
+  if (n <= 0) n = 1;
+  const slideDuration = durationMinutes / n;
   if (slideDuration < 1) {
     errors.push(
       `slide_duration is ${slideDuration.toFixed(2)} minutes `
-      + `(${durationMinutes} / ${slideCount} slides); must be at least 1 minute.`,
+      + `(${durationMinutes} / ${n} slides; countable slides exclude `
+      + 'title, toc, and thank_you, and include Well Done when present); '
+      + 'must be at least 1 minute.',
     );
   }
   return errors;

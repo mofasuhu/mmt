@@ -19,6 +19,7 @@ import {
   isSectionId,
   isRecapTitle,
   isWellDoneTitle,
+  wellDoneTitleForLanguage,
   sectionIdValidationError,
   validateSessionSectionCoverage,
   validateSectionTitlesFromCsv,
@@ -841,6 +842,10 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         || isRecapTitle(slide.en_slide_title || '');
       const isWellDoneSlide = isWellDoneTitle(slide.ar_slide_title || '')
         || isWellDoneTitle(slide.en_slide_title || '');
+      if (isWellDoneSlide) {
+        slide.en_slide_title = wellDoneTitleForLanguage('en');
+        slide.ar_slide_title = wellDoneTitleForLanguage('ar');
+      }
       // Post-last-question instructional slides stay in the preceding section.
       let isRootTailSlide = Boolean(
         isThankYouSlideMerged(slide) || isRecapSlide || isWellDoneSlide || isAfterThankYou,

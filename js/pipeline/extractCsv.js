@@ -23,6 +23,7 @@ import {
   isSectionId,
   isRecapTitle,
   isWellDoneTitle,
+  standardizedWellDoneTitle,
   sectionIdValidationError,
   validateSessionSectionCoverage,
   validateSectionTitlesFromCsv,
@@ -603,6 +604,11 @@ async function processPresentationNewMode(vfs, filePath, log, options) {
         slideId = 'new';
         const standardizedTitle = getStandardizedThankYouTitle(slideData.slide_title || '', sessionLang);
         if (standardizedTitle) finalSectionTitle = standardizedTitle;
+      }
+
+      if (isWellDone) {
+        const standardizedWd = standardizedWellDoneTitle(sessionLang, slideData.slide_title || '');
+        if (standardizedWd) finalSectionTitle = standardizedWd;
       }
 
       if (

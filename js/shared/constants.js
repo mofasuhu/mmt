@@ -75,6 +75,15 @@ export const THANK_YOU_TITLE_BY_LANGUAGE = {
   it: 'Grazie!',
 };
 
+export const WELL_DONE_TITLE_BY_LANGUAGE = {
+  ar: 'عمل رائع!',
+  de: 'Gut gemacht!',
+  en: 'Well Done!',
+  es: '¡Bien hecho!',
+  fr: 'Bravo !',
+  it: 'Ben fatto!',
+};
+
 export const SECTION_TITLE_TARGET_RGB = [0, 114, 180];
 
 export const REQUIRED_SECTION_TITLES_FOR_QID = [
