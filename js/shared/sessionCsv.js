@@ -2470,7 +2470,7 @@ export function expectedSeason(grade, term, courseType) {
 
   const label = metasessionTypeLabel(courseType).toLowerCase();
 
-  if (g >= 1 && g <= 11) {
+  if (g >= 1 && g <= 10) {
     if (label === 'foundation') return '1';
     if (t === 0) return '1';
     if (t === 1 && label === 'full curriculum') return '2';
@@ -2478,7 +2478,7 @@ export function expectedSeason(grade, term, courseType) {
     if (t === 2 && label === 'full curriculum') return '4';
     if (t === 2 && label === 'final revision') return '5';
   }
-  if (g === 12 && t === 0) {
+  if ((g === 11 || g === 12) && t === 0) {
     if (label === 'foundation') return '6';
     if (label === 'full curriculum') return '7';
     if (label === 'final revision') return '8';
