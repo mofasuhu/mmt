@@ -1924,6 +1924,52 @@ export function validateRegularSectionLiveRolesXml(regularSections, root, permis
   return errors;
 }
 
+export function isInstructionalSectionContentRow(row) {
+  if (!isSectionId(row?.section_id)) return false;
+  if (csvCellStr(row.question_id)) return false;
+  if (liveSlideRoleFromRow(row)) return false;
+  if (isVideoCsvRow(row)) return false;
+  if (isTwelveDigitId(row?.activity_id)) return false;
+  if (isThankYouRow(row) || isRecapRow(row)) return false;
+  const title = csvCellStr(row.section_title);
+  if (isWellDoneTitle(title) || isWellDoneTitle(csvCellStr(row.slide_title))) return false;
+  return true;
+}
+
+export function validateSectionsHaveInstructionalFromRows(rows) {
+  const sectionIds = new Set();
+  const instructionalSections = new Set();
+  for (const row of rows) {
+    const sid = csvCellStr(row.section_id);
+    if (!isSectionId(sid)) continue;
+    sectionIds.add(sid);
+    if (isInstructionalSectionContentRow(row)) instructionalSections.add(sid);
+  }
+  return [...sectionIds]
+    .sort()
+    .filter((sid) => !instructionalSections.has(sid))
+    .map((sid) => `section ${sid}: missing at least one instructional slide.`);
+}
+
+export function validateSectionsHaveInstructionalFromXml(root) {
+  const errors = [];
+  for (const section of [...root.querySelectorAll('section')]) {
+    const sid = csvCellStr(section.getAttribute('section_id')) || '<unknown>';
+    let hasInstructional = false;
+    for (const slide of [...section.querySelectorAll('slide')]) {
+      const role = csvCellStr(slide.getAttribute('slide_role')).toLowerCase().replace(/ /g, '_');
+      if (role === 'instructional') {
+        hasInstructional = true;
+        break;
+      }
+    }
+    if (!hasInstructional) {
+      errors.push(`section ${sid}: missing at least one instructional slide.`);
+    }
+  }
+  return errors;
+}
+
 function xmlQuestionRowsForRule40(root) {
   const rows = [];
   for (const slide of [...root.querySelectorAll('slide')]) {
@@ -2127,6 +2173,7 @@ export function validateSessionContentRulesFromXml(
   errors.push(...validateQuestionIdUniquenessFromXml(root));
   errors.push(...validateRegularSectionWorksheetCountsXml(regularSections, root, permissions));
   errors.push(...validateRegularSectionLiveRolesXml(regularSections, root, permissions));
+  errors.push(...validateSectionsHaveInstructionalFromXml(root));
   if (metadataById) {
     errors.push(...validateRule40_60Mcq(
       xmlMetasessionType,
@@ -2167,6 +2214,7 @@ export function validateSessionContentRules(
   errors.push(...validateQuestionIdUniqueness(rows));
   errors.push(...validateRegularSectionWorksheetCounts(regularSections, rows, permissions));
   errors.push(...validateRegularSectionLiveRoles(regularSections, rows, permissions));
+  errors.push(...validateSectionsHaveInstructionalFromRows(rows));
   if (metadataById) {
     errors.push(...validateRule40_60Mcq(
       xmlMetasessionType,
