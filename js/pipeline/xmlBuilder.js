@@ -42,6 +42,7 @@ import {
   resolveSlideIdForSlideGroupRow,
   sessionDurationFromCsvRows,
   normalizeExamDuration,
+  normalizeSectionType,
 } from '../shared/sessionCsv.js';
 import { getRawMetasessionData, buildReportRow } from '../shared/metasessionApi.js';
 import {
@@ -1143,6 +1144,8 @@ async function buildXmlStructure(sessionRows, detailsRow, apiData, log, fetchFn)
   }
 
   for (const [sectionId, sectionElement] of sectionElementsById.entries()) {
+    const stype = normalizeSectionType(sectionElement.getAttribute('section_type'), '');
+    if (stype === 'revision' || stype === 'foundation') continue;
     ensureWorksheet(sectionElement, sectionId);
   }
 

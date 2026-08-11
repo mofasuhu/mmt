@@ -4,6 +4,7 @@ import {
   isPlainTwelveDigitId,
   isRule40Exempt,
   isTwelveDigitId,
+  normalizeSectionType,
   permissionsForMetasession,
   PermissionContext,
   validateSessionContentRulesFromXml,
@@ -185,14 +186,14 @@ export async function validateMtXmlDocument(doc, {
   for (const section of [...root.querySelectorAll('section')]) {
     const sectionId = section.getAttribute('section_id') || '?';
     const stype = csvCellStr(section.getAttribute('section_type'));
-    let stypeNorm = stype.toLowerCase().replace(/ /g, '_');
-    if (stypeNorm === 'full_curriculum' || stypeNorm === 'fullcurriculum') {
-      stypeNorm = 'regular';
-    }
+    const stypeNorm = normalizeSectionType(stype, '');
     sectionTypeValues.push(stype);
     sectionIdValues.push(sectionId);
     const worksheets = [...section.children].filter((el) => el.tagName === 'worksheet');
-    if (!worksheets.length) errors.push(`section ${sectionId}: missing direct <worksheet> child.`);
+    // revision/foundation may omit <worksheet>; regular must have one.
+    if (!worksheets.length && stypeNorm !== 'revision' && stypeNorm !== 'foundation') {
+      errors.push(`section ${sectionId}: missing direct <worksheet> child.`);
+    }
     for (const worksheet of worksheets) {
       if (!isTwelveDigitId(worksheet.getAttribute('worksheet_id'))) errors.push(`section ${sectionId}: worksheet_id must be a 12-digit ID.`);
       if (
