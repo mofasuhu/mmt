@@ -218,6 +218,43 @@ async function readPngOrThrow(ffmpeg, path) {
 }
 
 /**
+ * Probe video codec_name from ffmpeg -i logs (does not require successful decode).
+ * @param {object} ctx
+ * @param {Uint8Array} videoBytes
+ * @param {string} [videoFileName]
+ * @returns {Promise<string>} lowercase codec (e.g. h264, av1) or ""
+ */
+export async function probeVideoCodec(ctx, videoBytes, videoFileName = 'input.mp4') {
+  return withFfmpegLock(async () => {
+    const ffmpeg = await getFFmpeg(ctx);
+    const inputName = videoFileName;
+    const inputBytes = videoBytes instanceof Uint8Array
+      ? videoBytes.slice()
+      : new Uint8Array(videoBytes);
+    await ffmpeg.writeFile(inputName, inputBytes);
+
+    /** @type {string[]} */
+    const logs = [];
+    const onLog = ({ message }) => logs.push(message);
+    ffmpeg.on('log', onLog);
+    try {
+      await ffmpeg.exec(['-hide_banner', '-i', inputName], 60_000);
+    } catch {
+      /* expected: no output file */
+    } finally {
+      ffmpeg.off('log', onLog);
+    }
+
+    await ffmpeg.deleteFile(inputName).catch(() => {});
+
+    const text = logs.join('\n');
+    // Stream #0:0: Video: av1 (Main) (av01 / 0x31307661), ...
+    const match = text.match(/Video:\s*([A-Za-z0-9_]+)/i);
+    return match ? match[1].toLowerCase() : '';
+  });
+}
+
+/**
  * Extract a single frame at timestampSec from video bytes.
  * @param {object} ctx
  * @param {Uint8Array} videoBytes

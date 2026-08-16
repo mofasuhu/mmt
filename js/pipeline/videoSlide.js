@@ -13,7 +13,13 @@ import {
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { fetchDownloadUrl } from '../shared/httpFetch.js';
-import { extractFrame } from '../video/ffmpegBridge.js';
+import { extractFrame, probeVideoCodec } from '../video/ffmpegBridge.js';
+import {
+  extractFrameHtml,
+  ensurePlayableHtml,
+  isPlayableVideoCodec,
+  normalizeVideoTitle,
+} from '../video/htmlVideo.js';
 import {
   applyVideoOverlays,
   canvasToBlob,
@@ -43,7 +49,7 @@ function videoSlideFolderId(row) {
 }
 
 function videoTitleFromRow(row) {
-  return csvCellStr(row.section_title);
+  return normalizeVideoTitle(csvCellStr(row.section_title));
 }
 
 function metasessionIdFromFolderName(name) {
@@ -320,14 +326,42 @@ async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onPro
     throw new Error(`Slide folder not found: ${slideDir}`);
   }
 
-  const title = videoTitleFromRow(row, lang);
+  const title = normalizeVideoTitle(videoTitleFromRow(row));
   log(`\nVideo ${videoId} @ ${tsRaw} (${tsSec}s) -> ${videoId}/`);
   if (title) log(`Title: ${title.slice(0, 80)}${title.length > 80 ? '…' : ''}`);
 
   const mp4Path = await resolveMp4(ctx, videoId, slideDir, onProgress);
-  const mp4Bytes = await vfs.readBytes(mp4Path);
+  let mp4Bytes = await vfs.readBytes(mp4Path);
 
-  const framePng = await extractFrame(ctx, mp4Bytes, tsSec, `${videoId}.mp4`);
+  const codec = await probeVideoCodec(ctx, mp4Bytes, `${videoId}.mp4`);
+  log(`[compat] ${videoId}.mp4 codec=${codec || 'unknown'}`);
+
+  let framePng;
+  if (isPlayableVideoCodec(codec)) {
+    framePng = await extractFrame(ctx, mp4Bytes, tsSec, `${videoId}.mp4`);
+  } else {
+    log(
+      `[compat] ${codec || 'non-H.264'} not decodable by ffmpeg.wasm; `
+        + 'using HTMLVideoElement for frame extract',
+    );
+    try {
+      framePng = await extractFrameHtml(mp4Bytes, tsSec, { log });
+    } catch (e) {
+      throw new Error(
+        `Video ${videoId} is ${codec || 'unsupported'} and this browser could not `
+          + `decode it for thumbnails (${e.message || e}). `
+          + 'Use Chrome with AV1 support, or run Scripts/video_slide.py / '
+          + 'mt_tool_with_migration_2 to convert to H.264 first.',
+      );
+    }
+    const remuxed = await ensurePlayableHtml(mp4Bytes, { log });
+    if (remuxed?.length) {
+      await vfs.writeBytes(mp4Path, remuxed);
+      mp4Bytes = remuxed;
+      log(`[compat] replaced ${videoId}.mp4 with H.264 MediaRecorder output`);
+    }
+  }
+
   const frameImg = await loadImageFromBytes(framePng);
 
   const baseCanvas = resizeCover(frameImg, DESIGN_SIZE.width, DESIGN_SIZE.height);
