@@ -39,7 +39,7 @@ export function getNumeralConvention(subject, grade) {
   const isMathIct = MATH_ICT_KEYWORDS.some((kw) => subject.includes(kw));
 
   if (isScience) {
-    return grade >= 4 ? 'european' : 'arabic';
+    return grade >= 7 ? 'european' : 'arabic';
   }
   if (isMathIct) {
     return grade >= 4 && grade <= 9 ? 'european' : 'arabic';
