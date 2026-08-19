@@ -13,6 +13,42 @@ import { toBlobURL } from '../../assets/vendor/ffmpeg/util/index.js';
 const DEFAULT_CORE_BASE = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
 const DEFAULT_FPS = 30;
 const EXEC_TIMEOUT_MS = 180_000;
+const SNIFF_LIMIT = 64 * 1024;
+
+function fourccAt(bytes, offset) {
+  if (offset + 4 > bytes.length) return '';
+  return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+}
+
+/**
+ * Detect video codec from MP4 brands / sample-entry fourccs (no ffmpeg.wasm).
+ * Prefers AV1 when both AV1 and AVC marks appear (ftyp + stsd).
+ * @param {Uint8Array | ArrayBuffer} videoBytes
+ * @returns {string} lowercase codec (av1, h264, hevc, vp9) or ""
+ */
+export function sniffMp4VideoCodec(videoBytes) {
+  if (!videoBytes) return '';
+  const bytes = videoBytes instanceof Uint8Array ? videoBytes : new Uint8Array(videoBytes);
+  const limit = Math.min(bytes.length, SNIFF_LIMIT);
+  let av1 = false;
+  let avc = false;
+  let hevc = false;
+  let vp9 = false;
+
+  for (let i = 0; i + 4 <= limit; i += 1) {
+    const tag = fourccAt(bytes, i);
+    if (tag === 'av01') av1 = true;
+    else if (tag === 'avc1' || tag === 'avc3' || tag === 'avcC') avc = true;
+    else if (tag === 'hvc1' || tag === 'hev1' || tag === 'hvcC') hevc = true;
+    else if (tag === 'vp09') vp9 = true;
+  }
+
+  if (av1) return 'av1';
+  if (avc) return 'h264';
+  if (hevc) return 'hevc';
+  if (vp9) return 'vp9';
+  return '';
+}
 
 /** @type {object | null} */
 let ffmpegInstance = null;

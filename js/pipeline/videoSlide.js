@@ -13,10 +13,9 @@ import {
 } from '../shared/sessionCsv.js';
 import { getMetasessionReportRow } from '../shared/metasessionApi.js';
 import { fetchDownloadUrl } from '../shared/httpFetch.js';
-import { extractFrame, probeVideoCodec } from '../video/ffmpegBridge.js';
+import { extractFrame, sniffMp4VideoCodec } from '../video/ffmpegBridge.js';
 import {
   extractFrameHtml,
-  ensurePlayableHtml,
   isPlayableVideoCodec,
   normalizeVideoTitle,
 } from '../video/htmlVideo.js';
@@ -35,7 +34,7 @@ const PRESIGN_API_URL = 'https://admin.classes.nagwa.com/api/v1/videos/{video_id
 const DEFAULT_VIDEO_DOWNLOAD_API_KEY = 'KbykjcvM9ljLd8P3YQLxyenWmNmKOuryjZJFFYmMxIc';
 const DOWNLOAD_CHUNK_SIZE = 256 * 1024;
 const DOWNLOAD_PROGRESS_INTERVAL_SEC = 0.25;
-const DOWNLOAD_WORKERS_PER_SESSION = 5;
+const DOWNLOAD_WORKERS_PER_SESSION = 2;
 
 function isVideoCsvRow(row) {
   return isTwelveDigitId(row.video_id);
@@ -299,6 +298,48 @@ async function findCsvForSessionFolder(ctx, sessionDir) {
   return localCsv ? `${sessionDir}/${localCsv}` : null;
 }
 
+function yieldToGc() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function releaseCanvas(canvas) {
+  if (!canvas) return;
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+/**
+ * @template T
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T) => Promise<void>} fn
+ */
+async function runPool(items, limit, fn) {
+  if (!items.length) return;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  let index = 0;
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (index < items.length) {
+      const item = items[index];
+      index += 1;
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * @param {object} ctx
+ * @param {string} dest
+ */
+async function hasNonEmptyMp4(ctx, dest) {
+  if (!(await ctx.vfs.isFile(dest))) return false;
+  const stat = typeof ctx.vfs.stat === 'function' ? await ctx.vfs.stat(dest) : null;
+  if (stat?.size != null) return stat.size > 0;
+  const bytes = await ctx.vfs.readBytes(dest);
+  return Boolean(bytes?.length);
+}
+
 /**
  * @param {object} ctx
  * @param {Record<string, string>} row
@@ -306,9 +347,8 @@ async function findCsvForSessionFolder(ctx, sessionDir) {
  * @param {string} lang
  * @param {string} font
  * @param {HTMLImageElement} playIcon
- * @param {(label: string, text: string) => void} [onProgress]
  */
-async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onProgress) {
+async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon) {
   const { vfs, log } = ctx;
   const videoId = videoSlideFolderId(row);
   if (!isTwelveDigitId(videoId)) return;
@@ -330,59 +370,77 @@ async function processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onPro
   log(`\nVideo ${videoId} @ ${tsRaw} (${tsSec}s) -> ${videoId}/`);
   if (title) log(`Title: ${title.slice(0, 80)}${title.length > 80 ? '…' : ''}`);
 
-  const mp4Path = await resolveMp4(ctx, videoId, slideDir, onProgress);
+  const mp4Path = await resolveMp4(ctx, videoId, slideDir);
+
   let mp4Bytes = await vfs.readBytes(mp4Path);
-
-  const codec = await probeVideoCodec(ctx, mp4Bytes, `${videoId}.mp4`);
-  log(`[compat] ${videoId}.mp4 codec=${codec || 'unknown'}`);
-
   let framePng;
-  if (isPlayableVideoCodec(codec)) {
-    framePng = await extractFrame(ctx, mp4Bytes, tsSec, `${videoId}.mp4`);
-  } else {
-    log(
-      `[compat] ${codec || 'non-H.264'} not decodable by ffmpeg.wasm; `
-        + 'using HTMLVideoElement for frame extract',
-    );
-    try {
-      framePng = await extractFrameHtml(mp4Bytes, tsSec, { log });
-    } catch (e) {
-      throw new Error(
-        `Video ${videoId} is ${codec || 'unsupported'} and this browser could not `
-          + `decode it for thumbnails (${e.message || e}). `
-          + 'Use Chrome with AV1 support, or run Scripts/video_slide.py / '
-          + 'mt_tool_with_migration_2 to convert to H.264 first.',
+  let baseCanvas;
+  let composed;
+  let thumbCanvas;
+  try {
+    const codec = sniffMp4VideoCodec(mp4Bytes);
+    log(`[compat] ${videoId}.mp4 codec=${codec || 'unknown'}`);
+
+    if (isPlayableVideoCodec(codec)) {
+      framePng = await extractFrame(ctx, mp4Bytes, tsSec, `${videoId}.mp4`);
+    } else {
+      log(
+        `[compat] ${codec || 'non-H.264'} not decodable by ffmpeg.wasm; `
+          + 'using HTMLVideoElement for frame extract',
       );
+      log(
+        '[compat] keeping original codec in the package (Chrome/Edge can play it). '
+          + 'QuickTime-safe H.264 needs Scripts/video_slide.py or '
+          + 'mt_tool_with_migration_2 — not remuxed in the web tool.',
+      );
+      try {
+        framePng = await extractFrameHtml(mp4Bytes, tsSec, { log });
+      } catch (e) {
+        throw new Error(
+          `Video ${videoId} is ${codec || 'unsupported'} and this browser could not `
+            + `decode it for thumbnails (${e.message || e}). `
+            + 'Use Chrome with AV1 support, or run Scripts/video_slide.py / '
+            + 'mt_tool_with_migration_2 to convert to H.264 first.',
+        );
+      }
     }
-    const remuxed = await ensurePlayableHtml(mp4Bytes, { log });
-    if (remuxed?.length) {
-      await vfs.writeBytes(mp4Path, remuxed);
-      mp4Bytes = remuxed;
-      log(`[compat] replaced ${videoId}.mp4 with H.264 MediaRecorder output`);
-    }
+
+    mp4Bytes = null;
+
+    const frameImg = await loadImageFromBytes(framePng);
+    framePng = null;
+
+    baseCanvas = resizeCover(frameImg, DESIGN_SIZE.width, DESIGN_SIZE.height);
+    composed = applyVideoOverlays(baseCanvas, title, lang, font, playIcon);
+    releaseCanvas(baseCanvas);
+    baseCanvas = null;
+
+    const fullPngPath = `${slideDir}/${videoId}.png`;
+    const thumbPath = `${slideDir}/${videoId}_thumbnail.png`;
+    const pdfPath = `${slideDir}/${videoId}.pdf`;
+
+    const fullBlob = await canvasToBlob(composed, 'image/png');
+    await vfs.writeBytes(fullPngPath, new Uint8Array(await fullBlob.arrayBuffer()));
+    log(`Wrote ${videoId}.png (${DESIGN_SIZE.width}×${DESIGN_SIZE.height})`);
+
+    thumbCanvas = resizeCover(composed, THUMB_SIZE.width, THUMB_SIZE.height);
+    const thumbBlob = await canvasToBlob(thumbCanvas, 'image/png');
+    await vfs.writeBytes(thumbPath, new Uint8Array(await thumbBlob.arrayBuffer()));
+    log(`Wrote ${videoId}_thumbnail.png (${THUMB_SIZE.width}×${THUMB_SIZE.height})`);
+    releaseCanvas(thumbCanvas);
+    thumbCanvas = null;
+
+    const pdfBytes = await canvasToPdfBytes(composed);
+    await vfs.writeBytes(pdfPath, pdfBytes);
+    log(`Wrote ${videoId}.pdf`);
+  } finally {
+    mp4Bytes = null;
+    framePng = null;
+    releaseCanvas(baseCanvas);
+    releaseCanvas(composed);
+    releaseCanvas(thumbCanvas);
+    await yieldToGc();
   }
-
-  const frameImg = await loadImageFromBytes(framePng);
-
-  const baseCanvas = resizeCover(frameImg, DESIGN_SIZE.width, DESIGN_SIZE.height);
-  const composed = applyVideoOverlays(baseCanvas, title, lang, font, playIcon);
-
-  const fullPngPath = `${slideDir}/${videoId}.png`;
-  const thumbPath = `${slideDir}/${videoId}_thumbnail.png`;
-  const pdfPath = `${slideDir}/${videoId}.pdf`;
-
-  const fullBlob = await canvasToBlob(composed, 'image/png');
-  await vfs.writeBytes(fullPngPath, new Uint8Array(await fullBlob.arrayBuffer()));
-  log(`Wrote ${videoId}.png (${DESIGN_SIZE.width}×${DESIGN_SIZE.height})`);
-
-  const thumbCanvas = resizeCover(composed, THUMB_SIZE.width, THUMB_SIZE.height);
-  const thumbBlob = await canvasToBlob(thumbCanvas, 'image/png');
-  await vfs.writeBytes(thumbPath, new Uint8Array(await thumbBlob.arrayBuffer()));
-  log(`Wrote ${videoId}_thumbnail.png (${THUMB_SIZE.width}×${THUMB_SIZE.height})`);
-
-  const pdfBytes = await canvasToPdfBytes(composed);
-  await vfs.writeBytes(pdfPath, pdfBytes);
-  log(`Wrote ${videoId}.pdf`);
 }
 
 /**
@@ -429,7 +487,8 @@ async function processSession(ctx, sessionDir, fontFamily, playIcon) {
   if (!videoRows.length) return 0;
 
   log(
-    `\nSession: ${sessionDir.split('/').pop()} (${lang}, ${videoRows.length} video slide(s), up to ${DOWNLOAD_WORKERS_PER_SESSION} parallel downloads)`,
+    `\nSession: ${sessionDir.split('/').pop()} (${lang}, ${videoRows.length} video slide(s), `
+      + `up to ${DOWNLOAD_WORKERS_PER_SESSION} parallel downloads, then 1 at a time extract)`,
   );
 
   const font = `${TITLE_FONT_SIZE}px ${fontFamily}`;
@@ -459,27 +518,29 @@ async function processSession(ctx, sessionDir, fontFamily, playIcon) {
     if (lines.length) log(lines.join('\n'), { progress: true });
   };
 
-  const queue = [...videoRows];
-  let inFlight = 0;
-  let index = 0;
+  const toDownload = [];
+  for (const row of videoRows) {
+    const videoId = videoSlideFolderId(row);
+    if (!isTwelveDigitId(videoId)) continue;
+    const dest = `${sessionDir}/${videoId}/${videoId}.mp4`;
+    if (!(await hasNonEmptyMp4(ctx, dest))) toDownload.push(row);
+  }
 
-  await new Promise((resolve, reject) => {
-    const next = () => {
-      while (inFlight < DOWNLOAD_WORKERS_PER_SESSION && index < queue.length) {
-        const row = queue[index];
-        index += 1;
-        inFlight += 1;
-        processVideoRow(ctx, row, sessionDir, lang, font, playIcon, onProgress)
-          .catch(reject)
-          .finally(() => {
-            inFlight -= 1;
-            if (index >= queue.length && inFlight === 0) resolve();
-            else next();
-          });
+  if (toDownload.length) {
+    await runPool(toDownload, DOWNLOAD_WORKERS_PER_SESSION, async (row) => {
+      const videoId = videoSlideFolderId(row);
+      const slideDir = `${sessionDir}/${videoId}`;
+      try {
+        await resolveMp4(ctx, videoId, slideDir, onProgress);
+      } catch (err) {
+        log(`[download] ${videoId}: ${err.message || err}`);
       }
-    };
-    next();
-  });
+    });
+  }
+
+  for (const row of videoRows) {
+    await processVideoRow(ctx, row, sessionDir, lang, font, playIcon);
+  }
 
   return videoRows.length;
 }
