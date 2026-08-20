@@ -5,7 +5,7 @@
  */
 
 const PLAYABLE_VIDEO_CODECS = new Set(['h264', 'avc1']);
-const LOAD_TIMEOUT_MS = 30_000;
+const LOAD_TIMEOUT_MS = 100_000;
 const SEEK_TIMEOUT_MS = 20_000;
 const FRAME_TIMEOUT_MS = 2_000;
 
