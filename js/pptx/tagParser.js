@@ -14,7 +14,7 @@ import {
 } from '../shared/sessionCsv.js';
 
 const ARABIC_RE = /[\u0600-\u06FF]/;
-const SCIENCE_KEYWORDS = ['علوم', 'فيزياء', 'كيمياء', 'أحياء'];
+const SCIENCE_KEYWORDS = ['علوم', 'فيزياء', 'كيمياء', 'أحياء', 'إدارة الأعمال', 'برمجة'];
 const MATH_ICT_KEYWORDS = ['رياضيات', 'إحصاء', 'تكنولوجيا'];
 
 /** Strip leading/trailing "!" (Python str.strip('!')). */
