@@ -1668,7 +1668,8 @@ export function collectAllSectionsFromXml(root) {
 }
 
 /** @returns {string[]} */
-export function validateTotalSectionCount(sections) {
+export function validateTotalSectionCount(sections, xmlMetasessionType = '') {
+  if (csvCellStr(xmlMetasessionType).toLowerCase() !== 'regular') return [];
   const count = Object.keys(sections || {}).length;
   if (count < 1 || count > 4) {
     return [`Session must have between 1 and 4 sections; found ${count}.`];
@@ -2169,7 +2170,7 @@ export function validateSessionContentRulesFromXml(
 ) {
   const regularSections = collectRegularSectionsFromXml(root);
   const allSections = collectAllSectionsFromXml(root);
-  const errors = validateTotalSectionCount(allSections);
+  const errors = validateTotalSectionCount(allSections, xmlMetasessionType);
   errors.push(...validateQuestionIdUniquenessFromXml(root));
   errors.push(...validateRegularSectionWorksheetCountsXml(regularSections, root, permissions));
   errors.push(...validateRegularSectionLiveRolesXml(regularSections, root, permissions));
@@ -2210,7 +2211,7 @@ export function validateSessionContentRules(
   const [allSections, allTypeErrors] = collectAllSectionsFromRows(rows, courseType);
   const errors = [...typeErrors, ...allTypeErrors];
   errors.push(...validateRevisionExamPresence(xmlMetasessionType, rows));
-  errors.push(...validateTotalSectionCount(allSections));
+  errors.push(...validateTotalSectionCount(allSections, xmlMetasessionType));
   errors.push(...validateQuestionIdUniqueness(rows));
   errors.push(...validateRegularSectionWorksheetCounts(regularSections, rows, permissions));
   errors.push(...validateRegularSectionLiveRoles(regularSections, rows, permissions));
