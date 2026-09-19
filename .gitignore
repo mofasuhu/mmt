@@ -1,10 +1,17 @@
-# --- Google OAuth (local / team machines only — never commit) ---
+# Google OAuth (local / team machines only — never commit)
 credentials.json
 token.json
 token_read.json
 token_sheet.json
+oauth-config.json
 
-# --- User session inputs / outputs ---
+# Local archive and service configuration
+archive-config.json
+*.local.json
+.env
+.env.*
+
+# User session inputs / outputs
 links.csv
 Output/
 sessions/
@@ -13,12 +20,12 @@ xml/
 tex/
 files/
 
-# --- Local debug / comparison logs ---
+# Local debug / comparison logs
 terminal log*.txt
 full_log.txt
 sections_validation_results.txt
 
-# --- LaTeX build artifacts ---
+# LaTeX build artifacts
 *.aux
 *.log
 *.out
@@ -26,13 +33,17 @@ sections_validation_results.txt
 *.fdb_latexmk
 *.fls
 
-# --- Node / tooling ---
+# Node / tooling
 node_modules/
-.env
-.env.*
 .wrangler/
 
-# --- OS / editor ---
+# Private generated media and data
+*.pptx
+*.xlsx
+*.xls
+*.zip
+
+# OS / editor
 .DS_Store
 Thumbs.db
 *.swp
